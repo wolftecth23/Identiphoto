@@ -1,4 +1,4 @@
-import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import {
   parseB2bRegistrationPayload,
@@ -10,65 +10,16 @@ import {
 /**
  * Storefront path: /apps/b2b-register/link (see [app_proxy] in shopify.app.toml).
  *
- * Called from two places:
- * - The customer account UI extension. It runs in a web worker with a null
- *   origin, so every response needs CORS headers, and Shopify does not set
- *   `logged_in_customer_id` — the customer comes from the session token in the
- *   body instead. The extension sends `Content-Type: text/plain` and no custom
- *   headers so the browser skips the CORS preflight.
- * - A theme/storefront form, which relies on `logged_in_customer_id`.
+ * Submit endpoint for the theme app extension's B2B registration form. The
+ * form posts same-origin through the app proxy, so Shopify signs the request
+ * and adds `logged_in_customer_id` when the customer is signed in.
  */
-
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Max-Age": "7200",
-};
 
 function jsonResponse(body: unknown, status = 200) {
-  return Response.json(body, {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      ...CORS_HEADERS,
-    },
-  });
+  return Response.json(body, { status });
 }
 
-function hostname(value: unknown): string | null {
-  if (typeof value !== "string" || !value.trim()) return null;
-  try {
-    return new URL(value.startsWith("http") ? value : `https://${value}`)
-      .hostname;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Verifies a customer account session token (signature + expiry) and returns
- * its claims, or null when it is invalid.
- */
-async function verifyCustomerAccountToken(request: Request, token: string) {
-  try {
-    const { sessionToken } = await authenticate.public.customerAccount(
-      new Request(request.url, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      }),
-    );
-    return sessionToken;
-  } catch {
-    return null;
-  }
-}
-
-export const loader = async ({ request }: LoaderFunctionArgs) => {
-  if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: CORS_HEADERS });
-  }
-
+export const loader = async () => {
   return jsonResponse(
     { ok: false, error: "Use POST to submit B2B registration." },
     405,
@@ -81,18 +32,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   let admin;
-  let shop: string | undefined;
   try {
-    const context = await authenticate.public.appProxy(request);
-    admin = context.admin;
-    shop = context.session?.shop;
+    ({ admin } = await authenticate.public.appProxy(request));
   } catch (error) {
     if (error instanceof Response) {
       return jsonResponse(
         {
           ok: false,
           error:
-            "Invalid app proxy request. Submit the form from your storefront or customer account so Shopify can sign the request.",
+            "Invalid app proxy request. Submit the form from your storefront so Shopify can sign the request.",
         },
         error.status,
       );
@@ -100,7 +48,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     throw error;
   }
 
+  const url = new URL(request.url);
+
   if (!admin) {
+    console.error(
+      `B2B registration: no offline session stored for ${url.searchParams.get("shop")}`,
+    );
     return jsonResponse(
       {
         ok: false,
@@ -117,38 +70,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return jsonResponse({ ok: false, error: "Invalid JSON body." }, 400);
   }
 
-  let customerId = new URL(request.url).searchParams.get(
-    "logged_in_customer_id",
-  );
-
-  const rawToken =
-    body && typeof body === "object"
-      ? (body as Record<string, unknown>).sessionToken
-      : undefined;
-
-  if (typeof rawToken === "string" && rawToken) {
-    const sessionToken = await verifyCustomerAccountToken(request, rawToken);
-    if (!sessionToken || hostname(sessionToken.dest) !== shop) {
-      return jsonResponse(
-        {
-          ok: false,
-          error: "Your session has expired. Refresh the page and try again.",
-        },
-        401,
-      );
-    }
-
-    customerId = sessionToken.sub?.match(/Customer\/(\d+)/)?.[1] ?? null;
-    if (!customerId) {
-      return jsonResponse(
-        {
-          ok: false,
-          error: "Sign in to your customer account before submitting.",
-        },
-        401,
-      );
-    }
-  }
+  const customerId = url.searchParams.get("logged_in_customer_id");
 
   const payload = parseB2bRegistrationPayload(body);
   if (!payload) {

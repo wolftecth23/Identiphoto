@@ -1,3 +1,7 @@
 .cache
 build
 node_modules
+prisma/*.sqlite
+prisma/*.sqlite-journal
+.env
+.env.*

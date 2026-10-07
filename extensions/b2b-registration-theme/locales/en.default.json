@@ -34,6 +34,12 @@
       "success": "Your account and company profile have been saved.",
       "success_joined_company": "Your account has been saved and added to the existing company %companyName%.",
       "sign_in_after_register": "Sign in with the email you registered to start ordering."
+    },
+    "validation": {
+      "required": "%field% is required.",
+      "email": "Enter a valid email address, like name@example.com.",
+      "phone": "Enter a valid 10-digit phone number.",
+      "zip": "Enter a valid ZIP code, like 12345 or 12345-6789."
     }
   }
 }

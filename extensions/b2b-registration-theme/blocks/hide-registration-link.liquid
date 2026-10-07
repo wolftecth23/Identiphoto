@@ -1,0 +1,35 @@
+{%- if customer -%}
+  {%- liquid
+    assign page_path = block.settings.page_path | strip | remove: '"' | remove: '\'
+    if page_path != blank
+      assign first_char = page_path | slice: 0
+      if first_char != '/'
+        assign page_path = '/' | append: page_path
+      endif
+    endif
+  -%}
+  {%- if page_path != blank -%}
+    <style>
+      a[href$="{{ page_path }}"],
+      li:has(> a[href$="{{ page_path }}"]) {
+        display: none !important;
+      }
+    </style>
+  {%- endif -%}
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "t:blocks.hide_registration_link.name",
+  "target": "head",
+  "settings": [
+    {
+      "type": "text",
+      "id": "page_path",
+      "label": "t:blocks.hide_registration_link.settings.page_path.label",
+      "info": "t:blocks.hide_registration_link.settings.page_path.info",
+      "default": "/pages/create-account"
+    }
+  ]
+}
+{% endschema %}

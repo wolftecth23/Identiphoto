@@ -23,6 +23,78 @@
       var province = form.elements.namedItem("provinceCode");
       if (root.dataset.province) province.value = root.dataset.province;
 
+      // The field shows a fixed +1 prefix; drop a leading 1 if the customer
+      // typed it anyway.
+      function phoneDigitsOf(raw) {
+        var digits = raw.replace(/\D/g, "");
+        if (digits.length === 11 && digits.charAt(0) === "1") {
+          digits = digits.slice(1);
+        }
+        return digits;
+      }
+
+      // The form is novalidate, so required fields get inline messages
+      // instead of the browser's tooltips.
+      var fields = Array.prototype.filter.call(form.elements, function (el) {
+        return el.required && !el.disabled;
+      });
+
+      function fieldError(el) {
+        var value = el.value.trim();
+        if (!value) {
+          var label = form.querySelector('label[for="' + el.id + '"]');
+          return messages.validation.required.replace(
+            "%field%",
+            label ? label.textContent.trim() : el.name
+          );
+        }
+        if (el.type === "email" && el.validity.typeMismatch) {
+          return messages.validation.email;
+        }
+        if (el.name === "phone" && phoneDigitsOf(value).length !== 10) {
+          return messages.validation.phone;
+        }
+        if (el.name === "zip" && !/^\d{5}(-\d{4})?$/.test(value)) {
+          return messages.validation.zip;
+        }
+        return "";
+      }
+
+      function validateField(el) {
+        var message = fieldError(el);
+        var error = document.getElementById(el.id + "-error");
+        error.textContent = message;
+        error.hidden = !message;
+        el.closest(".b2b-register__field").classList.toggle(
+          "b2b-register__field--invalid",
+          Boolean(message)
+        );
+        if (message) {
+          el.setAttribute("aria-invalid", "true");
+        } else {
+          el.removeAttribute("aria-invalid");
+        }
+        return !message;
+      }
+
+      fields.forEach(function (el) {
+        var error = document.createElement("p");
+        error.className = "b2b-register__error";
+        error.id = el.id + "-error";
+        error.hidden = true;
+        el.closest(".b2b-register__field").appendChild(error);
+        el.setAttribute("aria-describedby", error.id);
+
+        // Clear the message as soon as a flagged field is fixed, and check
+        // formats once the customer leaves a field they filled in.
+        el.addEventListener(el.tagName === "SELECT" ? "change" : "input", function () {
+          if (el.getAttribute("aria-invalid") === "true") validateField(el);
+        });
+        el.addEventListener("blur", function () {
+          if (el.value.trim()) validateField(el);
+        });
+      });
+
       function showBanner(tone, message) {
         banner.dataset.tone = tone;
         banner.textContent = message;
@@ -34,16 +106,20 @@
         event.preventDefault();
         banner.hidden = true;
 
+        var invalid = fields.filter(function (el) {
+          return !validateField(el);
+        });
+        if (invalid.length) {
+          invalid[0].focus();
+          return;
+        }
+
         var data = new FormData(form);
         var value = function (name) {
           return String(data.get(name) || "").trim();
         };
-        // The field shows a fixed +1 prefix; drop a leading 1 if the customer
-        // typed it anyway, then send E.164 (+1XXXXXXXXXX).
-        var phoneDigits = value("phone").replace(/\D/g, "");
-        if (phoneDigits.length === 11 && phoneDigits.charAt(0) === "1") {
-          phoneDigits = phoneDigits.slice(1);
-        }
+        // Send E.164 (+1XXXXXXXXXX).
+        var phoneDigits = phoneDigitsOf(value("phone"));
 
         var payload = {
           firstName: value("firstName"),

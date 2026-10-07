@@ -34,6 +34,12 @@
       "success": "Votre compte et votre profil entreprise ont été enregistrés.",
       "success_joined_company": "Votre compte a été enregistré et ajouté à l'entreprise existante %companyName%.",
       "sign_in_after_register": "Connectez-vous avec l'adresse courriel utilisée pour commencer à commander."
+    },
+    "validation": {
+      "required": "Le champ « %field% » est obligatoire.",
+      "email": "Entrez une adresse courriel valide, par exemple nom@exemple.com.",
+      "phone": "Entrez un numéro de téléphone valide à 10 chiffres.",
+      "zip": "Entrez un code ZIP valide, par exemple 12345 ou 12345-6789."
     }
   }
 }

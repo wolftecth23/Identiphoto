@@ -54,13 +54,19 @@
         {
           "submitError": {{ 'b2b_registration.messages.submit_error' | t | json }},
           "success": {{ 'b2b_registration.messages.success' | t | json }},
-          "successJoinedCompany": {{ 'b2b_registration.messages.success_joined_company' | t | json }}
+          "successJoinedCompany": {{ 'b2b_registration.messages.success_joined_company' | t | json }},
+          "validation": {
+            "required": {{ 'b2b_registration.validation.required' | t | json }},
+            "email": {{ 'b2b_registration.validation.email' | t | json }},
+            "phone": {{ 'b2b_registration.validation.phone' | t | json }},
+            "zip": {{ 'b2b_registration.validation.zip' | t | json }}
+          }
         }
       </script>
 
       <div class="b2b-register__banner" role="alert" data-b2b-register-banner hidden></div>
 
-      <form class="b2b-register__form" data-b2b-register-form>
+      <form class="b2b-register__form" data-b2b-register-form novalidate>
         <fieldset class="b2b-register__section">
           <legend class="b2b-register__legend">{{ 'b2b_registration.sections.personal' | t }}</legend>
           <div class="b2b-register__grid">
@@ -121,7 +127,7 @@
             </div>
             <div class="b2b-register__field">
               <label for="{{ field_id }}-province">{{ 'b2b_registration.fields.state_province' | t }}</label>
-              <select id="{{ field_id }}-province" name="provinceCode">
+              <select id="{{ field_id }}-province" name="provinceCode" required>
                 <option value="">{{ 'b2b_registration.fields.state_placeholder' | t }}</option>
                 <option value="AL">Alabama</option>
                 <option value="AK">Alaska</option>

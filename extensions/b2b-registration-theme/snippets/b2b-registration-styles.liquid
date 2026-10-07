@@ -13,6 +13,8 @@
     --b2b-muted: color-mix(in srgb, currentColor 70%, transparent);
     --b2b-surface: color-mix(in srgb, currentColor 3%, transparent);
     --b2b-radius: 12px;
+    --b2b-critical: #d72c0d;
+    --b2b-error-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath fill-rule='evenodd' d='M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm-.75-11.5a.75.75 0 0 1 1.5 0v4a.75.75 0 0 1-1.5 0v-4ZM10 14.75a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z'/%3E%3C/svg%3E");
     container-type: inline-size;
     box-sizing: border-box;
     width: 100%;
@@ -128,6 +130,39 @@
     border: 0;
     border-radius: 0;
     box-shadow: none;
+  }
+
+  .b2b-register .b2b-register__field.b2b-register__field--invalid input,
+  .b2b-register .b2b-register__field.b2b-register__field--invalid select,
+  .b2b-register .b2b-register__field.b2b-register__field--invalid .b2b-register__phone {
+    border-color: var(--b2b-critical);
+  }
+  .b2b-register .b2b-register__field.b2b-register__field--invalid input:focus-visible,
+  .b2b-register .b2b-register__field.b2b-register__field--invalid select:focus-visible,
+  .b2b-register .b2b-register__field.b2b-register__field--invalid .b2b-register__phone:focus-within {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--b2b-critical) 20%, transparent);
+  }
+  .b2b-register .b2b-register__field.b2b-register__field--invalid .b2b-register__phone input {
+    box-shadow: none;
+  }
+  .b2b-register .b2b-register__error {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.4;
+    color: var(--b2b-critical);
+  }
+  .b2b-register .b2b-register__error::before {
+    content: "";
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    margin-top: 1px;
+    background-color: currentColor;
+    -webkit-mask: var(--b2b-error-icon) no-repeat center / contain;
+    mask: var(--b2b-error-icon) no-repeat center / contain;
   }
 
   .b2b-register .b2b-register__checkbox {
