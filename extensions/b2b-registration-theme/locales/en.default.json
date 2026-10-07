@@ -1,0 +1,39 @@
+{
+  "b2b_registration": {
+    "title": "Business registration",
+    "description": "Register your company to set up a business account.",
+    "sign_in_prompt": "Already have an account?",
+    "sign_in": "Sign in",
+    "business_account_title": "Business account",
+    "status": "Status",
+    "active": "Active",
+    "submit": "Create an Account",
+    "sections": {
+      "personal": "Personal information",
+      "company": "Company information",
+      "address": "Address information"
+    },
+    "fields": {
+      "first_name": "First name",
+      "last_name": "Last name",
+      "email": "Email",
+      "remote_assist": "Allow remote shopping assistance",
+      "company": "Company",
+      "phone": "Phone number",
+      "street_address": "Street address",
+      "address_line_2": "Address line 2 (optional)",
+      "address_line_3": "Address line 3 (optional)",
+      "country": "Country",
+      "state_province": "State/Province",
+      "state_placeholder": "Please select a region, state or province.",
+      "city": "City",
+      "zip": "ZIP/Postal code"
+    },
+    "messages": {
+      "submit_error": "We could not complete registration. Please try again.",
+      "success": "Your account and company profile have been saved.",
+      "success_joined_company": "Your account has been saved and added to the existing company %companyName%.",
+      "sign_in_after_register": "Sign in with the email you registered to start ordering."
+    }
+  }
+}

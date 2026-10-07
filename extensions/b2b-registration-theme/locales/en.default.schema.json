@@ -1,0 +1,17 @@
+{
+  "blocks": {
+    "b2b_registration": {
+      "name": "B2B registration form",
+      "settings": {
+        "heading": {
+          "label": "Heading",
+          "info": "Leave empty to use the default heading."
+        },
+        "description": {
+          "label": "Description",
+          "info": "Leave empty to use the default description."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,126 @@
+{% doc %}
+  Submit handler for the B2B registration block. Inlined so it runs even when
+  the theme doesn't load app block assets.
+
+  @example
+  {% render 'b2b-registration-script' %}
+{% enddoc %}
+<script>
+  (function () {
+    function init(root) {
+      if (root.dataset.b2bRegisterReady) return;
+      root.dataset.b2bRegisterReady = "true";
+
+      var form = root.querySelector("[data-b2b-register-form]");
+      var banner = root.querySelector("[data-b2b-register-banner]");
+      var success = root.querySelector("[data-b2b-register-success]");
+      var button = form.querySelector('button[type="submit"]');
+      var messages = JSON.parse(
+        root.querySelector("[data-b2b-register-messages]").textContent
+      );
+
+      // Preselect the state from the signed-in customer's default address.
+      var province = form.elements.namedItem("provinceCode");
+      if (root.dataset.province) province.value = root.dataset.province;
+
+      function showBanner(tone, message) {
+        banner.dataset.tone = tone;
+        banner.textContent = message;
+        banner.hidden = false;
+        banner.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+
+      form.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        banner.hidden = true;
+
+        var data = new FormData(form);
+        var value = function (name) {
+          return String(data.get(name) || "").trim();
+        };
+        // The field shows a fixed +1 prefix; drop a leading 1 if the customer
+        // typed it anyway, then send E.164 (+1XXXXXXXXXX).
+        var phoneDigits = value("phone").replace(/\D/g, "");
+        if (phoneDigits.length === 11 && phoneDigits.charAt(0) === "1") {
+          phoneDigits = phoneDigits.slice(1);
+        }
+
+        var payload = {
+          firstName: value("firstName"),
+          lastName: value("lastName"),
+          email: value("email"),
+          companyName: value("companyName"),
+          phone: phoneDigits ? "+1" + phoneDigits : "",
+          address1: value("address1"),
+          address2: [value("address2"), value("address3")]
+            .filter(Boolean)
+            .join(", "),
+          city: value("city"),
+          provinceCode: value("provinceCode"),
+          countryCode: "US",
+          zip: value("zip"),
+          remoteShoppingAssistance: data.has("remoteAssist"),
+        };
+
+        button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+        try {
+          // Same-origin app proxy request: Shopify signs it and adds
+          // logged_in_customer_id when the customer is signed in.
+          var response = await fetch(root.dataset.submitUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify(payload),
+            credentials: "same-origin",
+          });
+          var result = null;
+          try {
+            result = await response.json();
+          } catch (error) {
+            result = null;
+          }
+
+          if (response.ok && result && result.ok) {
+            form.hidden = true;
+            success.querySelector("[data-b2b-register-company]").textContent =
+              result.companyName || payload.companyName;
+            success.hidden = false;
+            showBanner(
+              "success",
+              result.created === false && result.companyName
+                ? messages.successJoinedCompany.replace(
+                    "%companyName%",
+                    result.companyName
+                  )
+                : messages.success
+            );
+            return;
+          }
+
+          var details = (result && result.userErrors ? result.userErrors : []).map(
+            function (entry) {
+              return entry.message;
+            }
+          );
+          showBanner(
+            "critical",
+            [(result && result.error) || messages.submitError]
+              .concat(details)
+              .join(" ")
+          );
+        } catch (error) {
+          console.error(error);
+          showBanner("critical", messages.submitError);
+        } finally {
+          button.disabled = false;
+          button.removeAttribute("aria-busy");
+        }
+      });
+    }
+
+    document.querySelectorAll("[data-b2b-register]").forEach(init);
+  })();
+</script>

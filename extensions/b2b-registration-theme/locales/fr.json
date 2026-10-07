@@ -1,0 +1,39 @@
+{
+  "b2b_registration": {
+    "title": "Inscription de l'entreprise",
+    "description": "Inscrivez votre entreprise pour créer un compte professionnel.",
+    "sign_in_prompt": "Vous avez déjà un compte ?",
+    "sign_in": "Se connecter",
+    "business_account_title": "Compte professionnel",
+    "status": "Statut",
+    "active": "Actif",
+    "submit": "Créer un compte",
+    "sections": {
+      "personal": "Informations personnelles",
+      "company": "Informations sur l'entreprise",
+      "address": "Informations d'adresse"
+    },
+    "fields": {
+      "first_name": "Prénom",
+      "last_name": "Nom",
+      "email": "Courriel",
+      "remote_assist": "Autoriser l'assistance à distance pour les achats",
+      "company": "Entreprise",
+      "phone": "Numéro de téléphone",
+      "street_address": "Adresse",
+      "address_line_2": "Complément d'adresse (facultatif)",
+      "address_line_3": "Complément d'adresse 2 (facultatif)",
+      "country": "Pays",
+      "state_province": "État/Province",
+      "state_placeholder": "Veuillez sélectionner une région, un état ou une province.",
+      "city": "Ville",
+      "zip": "Code postal"
+    },
+    "messages": {
+      "submit_error": "Impossible de terminer l'inscription. Réessayez.",
+      "success": "Votre compte et votre profil entreprise ont été enregistrés.",
+      "success_joined_company": "Votre compte a été enregistré et ajouté à l'entreprise existante %companyName%.",
+      "sign_in_after_register": "Connectez-vous avec l'adresse courriel utilisée pour commencer à commander."
+    }
+  }
+}
