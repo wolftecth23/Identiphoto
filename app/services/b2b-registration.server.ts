@@ -1,4 +1,9 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
+import {
+  sendRegistrationEmail,
+  smtpMailerFromEnv,
+  type Mailer,
+} from "./b2b-registration-email.server";
 
 export type B2bRegistrationPayload = {
   firstName?: string;
@@ -12,6 +17,16 @@ export type B2bRegistrationPayload = {
   provinceCode?: string;
   countryCode: string;
   zip: string;
+  /** Storefront locale the form was submitted from; picks the email language. */
+  locale?: string;
+};
+
+export type B2bRegistrationOptions = {
+  /**
+   * Sends the confirmation email. Defaults to the SMTP server in the
+   * environment; null skips the email.
+   */
+  emailSender?: { mailer: Mailer; from: string } | null;
 };
 
 export type B2bRegistrationResult =
@@ -26,6 +41,8 @@ export type B2bRegistrationResult =
       linked: boolean;
       customerCreated?: boolean;
       alreadyLinked?: boolean;
+      /** True when the registration confirmation email was handed to SMTP. */
+      emailSent?: boolean;
     }
   | {
       ok: false;
@@ -557,12 +574,13 @@ function byRankThenAge(a: RankedCompany, b: RankedCompany): number {
  * suffixes, punctuation, casing, repeated letters, plurals and small typos
  * are ignored, closest name first and then oldest. Combines a name-prefix
  * search with the most recently created companies, because the search index
- * can lag a few seconds behind `companyCreate`.
+ * can lag a few seconds behind `companyCreate`; those recent companies are
+ * returned too, newest first.
  */
 async function findCompaniesByName(
   admin: AdminApiContext,
   companyName: string,
-): Promise<RankedCompany[]> {
+): Promise<{ nameMatches: RankedCompany[]; recent: CompanySummary[] }> {
   const targetKey = companyMatchKey(companyName);
   const firstToken = companyNameTokens(companyName).find(
     (token) => token !== "the",
@@ -608,10 +626,11 @@ async function findCompaniesByName(
     },
   );
 
+  const recent = companiesData.data?.recent?.nodes ?? [];
   const candidates = new Map<string, RankedCompany>();
   for (const company of [
     ...(companiesData.data?.byName?.nodes ?? []),
-    ...(companiesData.data?.recent?.nodes ?? []),
+    ...recent,
   ]) {
     const rank = companyNameMatchRank(companyName, company.name);
     if (rank !== null) {
@@ -619,7 +638,7 @@ async function findCompaniesByName(
     }
   }
 
-  return [...candidates.values()].sort(byRankThenAge);
+  return { nameMatches: [...candidates.values()].sort(byRankThenAge), recent };
 }
 
 function hasEmailAtDomain(
@@ -688,7 +707,8 @@ async function findCompaniesByEmailDomain(
 /**
  * Of `companyIds`, returns those with a contact whose email is at `domain`,
  * read straight from each company so contacts added seconds ago (not yet in
- * the customer search index) still count.
+ * the customer search index) still count. Only the newest contacts are read:
+ * older ones are already found through customer search.
  */
 async function companiesWithContactAtDomain(
   admin: AdminApiContext,
@@ -720,7 +740,7 @@ async function companiesWithContactAtDomain(
         nodes(ids: $ids) {
           ... on Company {
             id
-            contacts(first: 50, sortKey: CREATED_AT) {
+            contacts(first: 20, sortKey: CREATED_AT, reverse: true) {
               nodes {
                 customer {
                   defaultEmailAddress {
@@ -751,7 +771,13 @@ async function companiesWithContactAtDomain(
 }
 
 /** How many name matches have their contacts' emails checked directly. */
-const MAX_COMPANIES_TO_VERIFY = 5;
+const MAX_NAME_MATCHES_TO_VERIFY = 5;
+
+/**
+ * How many of the newest companies have their contacts' emails checked
+ * directly, covering contacts the customer search index has not caught up on.
+ */
+const MAX_RECENT_COMPANIES_TO_VERIFY = 5;
 
 /**
  * Highest `companyNameMatchRank` that counts as the same name: identical
@@ -759,66 +785,156 @@ const MAX_COMPANIES_TO_VERIFY = 5;
  */
 const SAME_NAME_RANK = 1;
 
+/** Sorts domain matches whose name differs from the typed one last. */
+const UNRELATED_NAME_RANK = Number.MAX_SAFE_INTEGER;
+
 /**
- * Finds the existing company this registrant belongs to. The company name is
- * the source of truth: only companies with a matching name are considered.
+ * Of the companies with a contact at `emailDomain`, returns the one whose name
+ * is closest to `companyName`, then the oldest; null when there are none.
+ */
+async function findCompanyByEmailDomain(
+  admin: AdminApiContext,
+  companyName: string,
+  emailDomain: string,
+  nameMatches: RankedCompany[],
+  recent: CompanySummary[],
+): Promise<CompanySummary | null> {
+  const domainCompanies = await findCompaniesByEmailDomain(admin, emailDomain);
+
+  const unverified = new Map<string, CompanySummary>();
+  for (const company of [
+    ...nameMatches
+      .slice(0, MAX_NAME_MATCHES_TO_VERIFY)
+      .map(({ company }) => company),
+    ...recent.slice(0, MAX_RECENT_COMPANIES_TO_VERIFY),
+  ]) {
+    if (!domainCompanies.has(company.id)) unverified.set(company.id, company);
+  }
+  const verifiedIds = await companiesWithContactAtDomain(
+    admin,
+    [...unverified.keys()],
+    emailDomain,
+  );
+  for (const id of verifiedIds) {
+    domainCompanies.set(id, unverified.get(id)!);
+  }
+
+  const ranked = [...domainCompanies.values()]
+    .map((company) => ({
+      company,
+      rank:
+        companyNameMatchRank(companyName, company.name) ?? UNRELATED_NAME_RANK,
+    }))
+    .sort(byRankThenAge);
+  return ranked[0]?.company ?? null;
+}
+
+/**
+ * Finds the existing company this registrant belongs to. The company name and
+ * the business email domain each identify a company on their own:
  *
- * - The same name ("Nike LLC" for "Nike") is used whatever the email.
- * - A merely similar name ("shivvvv technolab") is used only when the company
- *   already has a contact at the registrant's business email domain, so it
- *   joins "Shiv Technolabs Pvt. Ltd." from ronak@shivlab.com when
- *   karan@shivlab.com is its contact, but not from someone@other.com or a
- *   personal mailbox.
- * - A name equal to the email domain itself ("Shivlab" from @shivlab.com)
- *   counts as similar for the companies of that domain.
+ * - A company with a contact at the registrant's business email domain is
+ *   used whatever name was typed, so ronak@shivlab.com joins the company
+ *   karan@shivlab.com belongs to even when typing "Acme". If several
+ *   companies share the domain, the closest name and then the oldest wins.
+ * - Otherwise the same name ("Nike LLC" for "Nike") is used. Personal
+ *   mailboxes (gmail.com, ...) never match by domain, only by name.
  */
 async function findMatchingCompany(
   admin: AdminApiContext,
   companyName: string,
   emailDomain: string | null,
 ): Promise<CompanySummary | null> {
-  const nameMatches = await findCompaniesByName(admin, companyName);
-  const sameName = nameMatches.find(({ rank }) => rank <= SAME_NAME_RANK);
-  if (sameName) return sameName.company;
-  if (!emailDomain) return null;
-
-  const domainCompanies = await findCompaniesByEmailDomain(admin, emailDomain);
-
-  const candidates = new Map(
-    nameMatches.map((match) => [match.company.id, match]),
+  const { nameMatches, recent } = await findCompaniesByName(
+    admin,
+    companyName,
   );
-  const domainName = emailDomain.split(".")[0].replace(/-/g, "");
-  if (companyMatchKey(companyName) === domainName) {
-    for (const company of domainCompanies.values()) {
-      if (!candidates.has(company.id)) {
-        candidates.set(company.id, { company, rank: 4 });
-      }
-    }
+
+  if (emailDomain) {
+    const domainCompany = await findCompanyByEmailDomain(
+      admin,
+      companyName,
+      emailDomain,
+      nameMatches,
+      recent,
+    );
+    if (domainCompany) return domainCompany;
   }
 
-  const ranked = [...candidates.values()].sort(byRankThenAge);
-  const unverifiedIds = ranked
-    .map(({ company }) => company.id)
-    .filter((id) => !domainCompanies.has(id))
-    .slice(0, MAX_COMPANIES_TO_VERIFY);
-  const verifiedIds = await companiesWithContactAtDomain(
-    admin,
-    unverifiedIds,
-    emailDomain,
-  );
-
   return (
-    ranked.find(
-      ({ company }) =>
-        domainCompanies.has(company.id) || verifiedIds.has(company.id),
-    )?.company ?? null
+    nameMatches.find(({ rank }) => rank <= SAME_NAME_RANK)?.company ?? null
   );
+}
+
+/**
+ * Emails the customer that registration succeeded. Failures are logged and
+ * reported as false: the account and company are already saved by then.
+ */
+async function sendRegistrationConfirmation(
+  admin: AdminApiContext,
+  sender: { mailer: Mailer; from: string } | null,
+  details: {
+    to: string | null | undefined;
+    firstName: string | null | undefined;
+    companyName: string;
+    created: boolean;
+    locale: string | undefined;
+  },
+): Promise<boolean> {
+  if (!sender) {
+    console.warn("B2B registration email skipped: SMTP_HOST is not set.");
+    return false;
+  }
+  if (!details.to) {
+    console.warn("B2B registration email skipped: customer has no email.");
+    return false;
+  }
+
+  try {
+    type ShopQuery = {
+      data?: {
+        shop?: { name: string; primaryDomain: { url: string } };
+      };
+    };
+
+    const shopData = await graphql<ShopQuery>(
+      admin,
+      `
+        #graphql
+        query B2bRegistrationEmailShop {
+          shop {
+            name
+            primaryDomain {
+              url
+            }
+          }
+        }
+      `,
+    );
+    const shop = shopData.data?.shop;
+    if (!shop) throw new Error("Shop details unavailable.");
+
+    await sendRegistrationEmail(sender, {
+      to: details.to,
+      firstName: details.firstName,
+      companyName: details.companyName,
+      created: details.created,
+      shopName: shop.name,
+      storeUrl: shop.primaryDomain.url,
+      locale: details.locale,
+    });
+    return true;
+  } catch (error) {
+    console.error("B2B registration email failed", error);
+    return false;
+  }
 }
 
 export async function linkCustomerToB2bCompany(
   admin: AdminApiContext,
   customerId: string,
   payload: B2bRegistrationPayload,
+  options: B2bRegistrationOptions = {},
 ): Promise<B2bRegistrationResult> {
   const customerIdNumeric = customerId.replace(/\D/g, "") || customerId;
   const companyNameError = validateCompanyName(payload.companyName);
@@ -886,8 +1002,9 @@ export async function linkCustomerToB2bCompany(
     };
   };
 
-  // Personal mailboxes (gmail.com, ...) cannot confirm that two people work
-  // at the same business, so they only join companies with the same name.
+  // A business email domain already used by a company's contact puts the
+  // customer in that company regardless of the name typed. Personal mailboxes
+  // (gmail.com, ...) say nothing about the employer, so they only match by name.
   const emailDomain = businessEmailDomain(customer.email ?? payload.email);
 
   const resolution = await withCompanyLock(
@@ -1147,6 +1264,20 @@ export async function linkCustomerToB2bCompany(
     }
   }
 
+  const emailSent = await sendRegistrationConfirmation(
+    admin,
+    options.emailSender === undefined
+      ? smtpMailerFromEnv()
+      : options.emailSender,
+    {
+      to: customer.email ?? payload.email,
+      firstName: customer.firstName ?? payload.firstName,
+      companyName: resolvedCompanyName,
+      created,
+      locale: payload.locale,
+    },
+  );
+
   return {
     ok: true,
     customerId: customerIdNumeric,
@@ -1154,6 +1285,7 @@ export async function linkCustomerToB2bCompany(
     companyName: resolvedCompanyName,
     created,
     linked: !created,
+    emailSent,
   };
 }
 
@@ -1343,6 +1475,7 @@ export async function registerB2bCustomer(
   admin: AdminApiContext,
   loggedInCustomerId: string | null,
   payload: B2bRegistrationPayload,
+  options: B2bRegistrationOptions = {},
 ): Promise<B2bRegistrationResult> {
   let customerId = loggedInCustomerId;
   let customerCreated = false;
@@ -1356,7 +1489,12 @@ export async function registerB2bCustomer(
     customerCreated = true;
   }
 
-  const linkResult = await linkCustomerToB2bCompany(admin, customerId, payload);
+  const linkResult = await linkCustomerToB2bCompany(
+    admin,
+    customerId,
+    payload,
+    options,
+  );
   if (!linkResult.ok) {
     return linkResult;
   }
@@ -1397,5 +1535,6 @@ export function parseB2bRegistrationPayload(
     provinceCode: str("provinceCode") || undefined,
     countryCode,
     zip,
+    locale: str("locale") || undefined,
   };
 }

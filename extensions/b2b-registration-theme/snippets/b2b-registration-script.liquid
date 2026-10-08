@@ -136,6 +136,7 @@
           countryCode: "US",
           zip: value("zip"),
           remoteShoppingAssistance: data.has("remoteAssist"),
+          locale: {{ request.locale.iso_code | json }},
         };
 
         button.disabled = true;

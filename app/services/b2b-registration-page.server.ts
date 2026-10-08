@@ -318,6 +318,7 @@ const SCRIPT = `
         countryCode: ${JSON.stringify(USA_COUNTRY.isoCode)},
         zip: value("zip"),
         remoteShoppingAssistance: data.has("remoteAssist"),
+        locale: {{ request.locale.iso_code | json }},
       };
 
       button.disabled = true;

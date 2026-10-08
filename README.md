@@ -110,6 +110,24 @@ Creating customers from the registration form uses the Admin **Customer** API (n
 
 Until this is done, the proxy returns `403` with `PROTECTED_CUSTOMER_DATA_REQUIRED`.
 
+### Registration confirmation email
+
+After a successful registration the customer gets a confirmation email (English, or French on a French storefront) saying whether their company was created or which existing company they joined. It is sent over SMTP; set these in `.env` (and in your hosting environment):
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `SMTP_HOST` | Yes | e.g. `smtp.gmail.com`, `email-smtp.us-east-1.amazonaws.com`. Unset = no email is sent. |
+| `SMTP_PORT` | No | Defaults to `587`. |
+| `SMTP_SECURE` | No | `true` for TLS from the start; defaults to `true` only on port `465`. |
+| `SMTP_USER` / `SMTP_PASS` | Usually | SMTP login. |
+| `SMTP_FROM` | If no `SMTP_USER` | Sender, e.g. `Identiphoto <no-reply@identiphoto.com>`. Defaults to `SMTP_USER`. |
+
+A failed send is logged but does not fail the registration; the response then has `emailSent: false`. Customers who were already on the company get no email.
+
+### Tests
+
+`npm test` runs the registration tests (company matching and the confirmation email) against an in-memory fake of the Admin API.
+
 ## Shopify Dev MCP
 
 This template is configured with the Shopify Dev MCP. This instructs [Cursor](https://cursor.com/), [GitHub Copilot](https://github.com/features/copilot) and [Claude Code](https://claude.com/product/claude-code) and [Google Gemini CLI](https://github.com/google-gemini/gemini-cli) to use the Shopify Dev MCP.
