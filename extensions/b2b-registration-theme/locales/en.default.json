@@ -20,6 +20,7 @@
       "remote_assist": "Allow remote shopping assistance",
       "company": "Company",
       "phone": "Phone number",
+      "phone_country": "Phone country code",
       "street_address": "Street address",
       "address_line_2": "Address line 2 (optional)",
       "address_line_3": "Address line 3 (optional)",
@@ -27,19 +28,30 @@
       "state_province": "State/Province",
       "state_placeholder": "Please select a region, state or province.",
       "city": "City",
-      "zip": "ZIP/Postal code"
+      "zip": "ZIP/Postal code",
+      "country_placeholder": "Select a country",
+      "city_placeholder": "Select a city",
+      "loading": "Loading…"
     },
     "messages": {
       "submit_error": "We could not complete registration. Please try again.",
       "success": "Your account and company profile have been saved.",
       "success_joined_company": "Your account has been saved and added to the existing company %companyName%.",
-      "sign_in_after_register": "Sign in with the email you registered to start ordering."
+      "sign_in_after_register": "Sign in with the email you registered to start ordering.",
+      "address_load_error": "We couldn't load the address options. Refresh the page and try again."
     },
     "validation": {
       "required": "%field% is required.",
       "email": "Enter a valid email address, like name@example.com.",
-      "phone": "Enter a valid 10-digit phone number.",
-      "zip": "Enter a valid ZIP code, like 12345 or 12345-6789."
+      "phone": "Please enter a valid number.",
+      "zip": "Enter a valid ZIP code, like 12345 or 12345-6789.",
+      "postal_code_ca": "Enter a valid postal code, like K1A 0B1.",
+      "first_name": "Please enter a valid first name.",
+      "last_name": "Please enter a valid last name.",
+      "company_name": "Company name must contain at least 2 letters or numbers.",
+      "address": "Please enter a valid street address.",
+      "city": "Please enter a valid city.",
+      "postal_code": "Please enter a valid postal code."
     }
   }
 }

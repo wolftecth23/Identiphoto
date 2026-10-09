@@ -48,18 +48,33 @@
     <div
       data-b2b-register
       data-submit-url="/apps/b2b-register/link"
+      data-regions-url="/apps/b2b-register/regions"
+      data-phone-url="/apps/b2b-register/phone"
+      data-country="{{ customer.default_address.country_code | default: localization.country.iso_code | escape }}"
       data-province="{{ customer.default_address.province_code | escape }}"
+      data-city="{{ customer.default_address.city | escape }}"
     >
       <script type="application/json" data-b2b-register-messages>
         {
           "submitError": {{ 'b2b_registration.messages.submit_error' | t | json }},
+          "addressLoadError": {{ 'b2b_registration.messages.address_load_error' | t | json }},
+          "countryPlaceholder": {{ 'b2b_registration.fields.country_placeholder' | t | json }},
+          "statePlaceholder": {{ 'b2b_registration.fields.state_placeholder' | t | json }},
+          "cityPlaceholder": {{ 'b2b_registration.fields.city_placeholder' | t | json }},
           "success": {{ 'b2b_registration.messages.success' | t | json }},
           "successJoinedCompany": {{ 'b2b_registration.messages.success_joined_company' | t | json }},
           "validation": {
             "required": {{ 'b2b_registration.validation.required' | t | json }},
             "email": {{ 'b2b_registration.validation.email' | t | json }},
+            "firstName": {{ 'b2b_registration.validation.first_name' | t | json }},
+            "lastName": {{ 'b2b_registration.validation.last_name' | t | json }},
+            "companyName": {{ 'b2b_registration.validation.company_name' | t | json }},
+            "address": {{ 'b2b_registration.validation.address' | t | json }},
+            "city": {{ 'b2b_registration.validation.city' | t | json }},
+            "postalCode": {{ 'b2b_registration.validation.postal_code' | t | json }},
             "phone": {{ 'b2b_registration.validation.phone' | t | json }},
-            "zip": {{ 'b2b_registration.validation.zip' | t | json }}
+            "zip": {{ 'b2b_registration.validation.zip' | t | json }},
+            "postalCodeCa": {{ 'b2b_registration.validation.postal_code_ca' | t | json }}
           }
         }
       </script>
@@ -72,16 +87,16 @@
           <div class="b2b-register__grid">
             <div class="b2b-register__field">
               <label for="{{ field_id }}-first-name">{{ 'b2b_registration.fields.first_name' | t }}</label>
-              <input id="{{ field_id }}-first-name" name="firstName" type="text" autocomplete="given-name" value="{{ customer.first_name | escape }}" required>
+              <input id="{{ field_id }}-first-name" name="firstName" type="text" autocomplete="given-name" maxlength="100" value="{{ customer.first_name | escape }}" required>
             </div>
             <div class="b2b-register__field">
               <label for="{{ field_id }}-last-name">{{ 'b2b_registration.fields.last_name' | t }}</label>
-              <input id="{{ field_id }}-last-name" name="lastName" type="text" autocomplete="family-name" value="{{ customer.last_name | escape }}" required>
+              <input id="{{ field_id }}-last-name" name="lastName" type="text" autocomplete="family-name" maxlength="100" value="{{ customer.last_name | escape }}" required>
             </div>
             {%- unless customer -%}
               <div class="b2b-register__field b2b-register__field--full">
                 <label for="{{ field_id }}-email">{{ 'b2b_registration.fields.email' | t }}</label>
-                <input id="{{ field_id }}-email" name="email" type="email" autocomplete="email" required>
+                <input id="{{ field_id }}-email" name="email" type="email" autocomplete="email" maxlength="254" required>
               </div>
             {%- endunless -%}
           </div>
@@ -92,13 +107,18 @@
           <div class="b2b-register__grid">
             <div class="b2b-register__field b2b-register__field--full">
               <label for="{{ field_id }}-company">{{ 'b2b_registration.fields.company' | t }}</label>
-              <input id="{{ field_id }}-company" name="companyName" type="text" autocomplete="organization" required>
+              <input id="{{ field_id }}-company" name="companyName" type="text" autocomplete="organization" maxlength="255" required>
             </div>
             <div class="b2b-register__field b2b-register__field--full">
               <label for="{{ field_id }}-phone">{{ 'b2b_registration.fields.phone' | t }}</label>
               <div class="b2b-register__phone">
-                <span class="b2b-register__phone-prefix">+1</span>
-                <input id="{{ field_id }}-phone" name="phone" type="tel" autocomplete="tel-national" inputmode="tel" required>
+                <div class="b2b-register__phone-prefix">
+                  <span aria-hidden="true" data-b2b-register-phone-prefix>US +1</span>
+                  <select name="phoneCountry" aria-label="{{ 'b2b_registration.fields.phone_country' | t }}" data-b2b-register-phone-country>
+                    <option value="US">United States (+1)</option>
+                  </select>
+                </div>
+                <input id="{{ field_id }}-phone" name="phone" type="tel" autocomplete="tel-national" inputmode="tel" maxlength="30" required>
               </div>
             </div>
           </div>
@@ -109,86 +129,38 @@
           <div class="b2b-register__grid">
             <div class="b2b-register__field b2b-register__field--full">
               <label for="{{ field_id }}-address1">{{ 'b2b_registration.fields.street_address' | t }}</label>
-              <input id="{{ field_id }}-address1" name="address1" type="text" autocomplete="address-line1" required>
+              <input id="{{ field_id }}-address1" name="address1" type="text" autocomplete="address-line1" maxlength="255" required>
             </div>
             <div class="b2b-register__field">
               <label for="{{ field_id }}-address2">{{ 'b2b_registration.fields.address_line_2' | t }}</label>
-              <input id="{{ field_id }}-address2" name="address2" type="text" autocomplete="address-line2">
+              <input id="{{ field_id }}-address2" name="address2" type="text" autocomplete="address-line2" maxlength="120">
             </div>
             <div class="b2b-register__field">
               <label for="{{ field_id }}-address3">{{ 'b2b_registration.fields.address_line_3' | t }}</label>
-              <input id="{{ field_id }}-address3" name="address3" type="text" autocomplete="address-line3">
+              <input id="{{ field_id }}-address3" name="address3" type="text" autocomplete="address-line3" maxlength="120">
             </div>
             <div class="b2b-register__field">
               <label for="{{ field_id }}-country">{{ 'b2b_registration.fields.country' | t }}</label>
-              <select id="{{ field_id }}-country" name="countryCode" disabled>
-                <option value="US">United States</option>
+              <select id="{{ field_id }}-country" name="countryCode" autocomplete="country" required>
+                <option value="">{{ 'b2b_registration.fields.loading' | t }}</option>
               </select>
             </div>
-            <div class="b2b-register__field">
+            <div class="b2b-register__field" data-b2b-register-region>
               <label for="{{ field_id }}-province">{{ 'b2b_registration.fields.state_province' | t }}</label>
-              <select id="{{ field_id }}-province" name="provinceCode" required>
+              <select id="{{ field_id }}-province" name="provinceCode" autocomplete="address-level1" required>
                 <option value="">{{ 'b2b_registration.fields.state_placeholder' | t }}</option>
-                <option value="AL">Alabama</option>
-                <option value="AK">Alaska</option>
-                <option value="AZ">Arizona</option>
-                <option value="AR">Arkansas</option>
-                <option value="CA">California</option>
-                <option value="CO">Colorado</option>
-                <option value="CT">Connecticut</option>
-                <option value="DE">Delaware</option>
-                <option value="DC">District of Columbia</option>
-                <option value="FL">Florida</option>
-                <option value="GA">Georgia</option>
-                <option value="HI">Hawaii</option>
-                <option value="ID">Idaho</option>
-                <option value="IL">Illinois</option>
-                <option value="IN">Indiana</option>
-                <option value="IA">Iowa</option>
-                <option value="KS">Kansas</option>
-                <option value="KY">Kentucky</option>
-                <option value="LA">Louisiana</option>
-                <option value="ME">Maine</option>
-                <option value="MD">Maryland</option>
-                <option value="MA">Massachusetts</option>
-                <option value="MI">Michigan</option>
-                <option value="MN">Minnesota</option>
-                <option value="MS">Mississippi</option>
-                <option value="MO">Missouri</option>
-                <option value="MT">Montana</option>
-                <option value="NE">Nebraska</option>
-                <option value="NV">Nevada</option>
-                <option value="NH">New Hampshire</option>
-                <option value="NJ">New Jersey</option>
-                <option value="NM">New Mexico</option>
-                <option value="NY">New York</option>
-                <option value="NC">North Carolina</option>
-                <option value="ND">North Dakota</option>
-                <option value="OH">Ohio</option>
-                <option value="OK">Oklahoma</option>
-                <option value="OR">Oregon</option>
-                <option value="PA">Pennsylvania</option>
-                <option value="RI">Rhode Island</option>
-                <option value="SC">South Carolina</option>
-                <option value="SD">South Dakota</option>
-                <option value="TN">Tennessee</option>
-                <option value="TX">Texas</option>
-                <option value="UT">Utah</option>
-                <option value="VT">Vermont</option>
-                <option value="VA">Virginia</option>
-                <option value="WA">Washington</option>
-                <option value="WV">West Virginia</option>
-                <option value="WI">Wisconsin</option>
-                <option value="WY">Wyoming</option>
               </select>
             </div>
             <div class="b2b-register__field">
               <label for="{{ field_id }}-city">{{ 'b2b_registration.fields.city' | t }}</label>
-              <input id="{{ field_id }}-city" name="city" type="text" autocomplete="address-level2" required>
+              <select id="{{ field_id }}-city" name="city" required data-b2b-register-city-select>
+                <option value="">{{ 'b2b_registration.fields.city_placeholder' | t }}</option>
+              </select>
+              <input id="{{ field_id }}-city-text" name="city" type="text" autocomplete="address-level2" maxlength="255" aria-label="{{ 'b2b_registration.fields.city' | t }}" required disabled hidden data-b2b-register-city-text>
             </div>
             <div class="b2b-register__field">
               <label for="{{ field_id }}-zip">{{ 'b2b_registration.fields.zip' | t }}</label>
-              <input id="{{ field_id }}-zip" name="zip" type="text" autocomplete="postal-code" required>
+              <input id="{{ field_id }}-zip" name="zip" type="text" autocomplete="postal-code" maxlength="10" required>
             </div>
           </div>
         </fieldset>

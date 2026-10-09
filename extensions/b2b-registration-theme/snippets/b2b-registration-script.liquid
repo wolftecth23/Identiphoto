@@ -1,6 +1,6 @@
 {% doc %}
-  Submit handler for the B2B registration block. Inlined so it runs even when
-  the theme doesn't load app block assets.
+  Address dropdowns and submit handler for the B2B registration block.
+  Inlined so it runs even when the theme doesn't load app block assets.
 
   @example
   {% render 'b2b-registration-script' %}
@@ -19,43 +19,336 @@
         root.querySelector("[data-b2b-register-messages]").textContent
       );
 
-      // Preselect the state from the signed-in customer's default address.
-      var province = form.elements.namedItem("provinceCode");
-      if (root.dataset.province) province.value = root.dataset.province;
+      var country = form.elements.namedItem("countryCode");
+      var region = form.elements.namedItem("provinceCode");
+      var regionField = root.querySelector("[data-b2b-register-region]");
+      var citySelect = root.querySelector("[data-b2b-register-city-select]");
+      var cityText = root.querySelector("[data-b2b-register-city-text]");
+      var phoneCountry = root.querySelector("[data-b2b-register-phone-country]");
+      var phonePrefix = root.querySelector("[data-b2b-register-phone-prefix]");
+      var phone = form.elements.namedItem("phone");
+      var countries = [];
 
-      // The field shows a fixed +1 prefix; drop a leading 1 if the customer
-      // typed it anyway.
-      function phoneDigitsOf(raw) {
-        var digits = raw.replace(/\D/g, "");
-        if (digits.length === 11 && digits.charAt(0) === "1") {
-          digits = digits.slice(1);
-        }
-        return digits;
+      function phoneCountryEntry() {
+        return (
+          countries.filter(function (entry) {
+            return entry.code === phoneCountry.value;
+          })[0] || { code: "US", phoneCode: "1" }
+        );
       }
 
-      // The form is novalidate, so required fields get inline messages
-      // instead of the browser's tooltips.
-      var fields = Array.prototype.filter.call(form.elements, function (el) {
-        return el.required && !el.disabled;
+      function showDialCode() {
+        phonePrefix.textContent =
+          phoneCountry.value + " +" + phoneCountryEntry().phoneCode;
+      }
+
+      // The server checks the number against the dial-code country's
+      // numbering plan. The last answer is kept with the input it was for, so
+      // fieldError can use it until the number or dial code changes.
+      var phoneCheck = { key: "", valid: true };
+
+      function phoneKey() {
+        return phoneCountry.value + "|" + phone.value.trim();
+      }
+
+      function checkPhone() {
+        var key = phoneKey();
+        if (phoneCheck.key === key) return Promise.resolve(phoneCheck);
+        return fetch(root.dataset.phoneUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            number: phone.value.trim(),
+            country: phoneCountry.value,
+          }),
+          credentials: "same-origin",
+        })
+          .then(function (response) {
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            return response.json();
+          })
+          .then(function (result) {
+            result.key = key;
+            return result;
+          });
+      }
+
+      // A number typed as +<code>… (often by autofill) moves the dial code to
+      // the country it belongs to; valid numbers are shown in that country's
+      // usual format.
+      function applyPhoneCheck(result) {
+        if (result.key !== phoneKey()) return;
+        if (result.valid) {
+          if (result.countryCode !== phoneCountry.value) {
+            phoneCountry.value = result.countryCode;
+            phoneCountryChosen = true;
+            showDialCode();
+          }
+          phone.value = result.national;
+          result.key = phoneKey();
+        }
+        phoneCheck = result;
+      }
+
+      // Runs when the customer leaves the field (to format the number) and on
+      // submit; messages only change on submit.
+      function verifyPhone() {
+        if (!phone.value.trim() || fieldError(phone)) return Promise.resolve();
+        // If the check can't run, the submit endpoint still validates.
+        return checkPhone().then(applyPhoneCheck, function (error) {
+          console.error(error);
+        });
+      }
+
+      // Responses are cached by the browser and here, so switching back to a
+      // country doesn't refetch it.
+      var responses = {};
+      function loadOptions(params) {
+        var url = root.dataset.regionsUrl + "?" + new URLSearchParams(params);
+        if (!responses[url]) {
+          responses[url] = fetch(url, { headers: { Accept: "application/json" } })
+            .then(function (response) {
+              if (!response.ok) throw new Error("HTTP " + response.status);
+              return response.json();
+            })
+            .catch(function (error) {
+              delete responses[url];
+              throw error;
+            });
+        }
+        return responses[url];
+      }
+
+      function fillSelect(select, options, placeholder, selected) {
+        select.replaceChildren(new Option(placeholder, ""));
+        options.forEach(function (option) {
+          select.add(new Option(option.label, option.value));
+        });
+        select.value = selected || "";
+        if (select.selectedIndex < 0) select.value = "";
+      }
+
+      // Strict city list when the dataset has cities for the area; free text
+      // only where it has none, so those customers can still register.
+      function showCities(names, selected) {
+        var hasList = names.length > 0;
+        citySelect.hidden = !hasList;
+        cityText.hidden = hasList;
+        cityText.disabled = hasList;
+        citySelect.disabled = !hasList;
+        cityText.value = hasList ? "" : selected || "";
+        fillSelect(
+          citySelect,
+          names.map(function (name) {
+            return { value: name, label: name };
+          }),
+          messages.cityPlaceholder,
+          selected
+        );
+      }
+
+      // An empty (still required) city list until a state is picked.
+      function resetCities() {
+        showCities([], "");
+        citySelect.hidden = false;
+        citySelect.disabled = false;
+        cityText.hidden = true;
+        cityText.disabled = true;
+      }
+
+      // Disabled fields are skipped by validation and left out of the
+      // submission, so only a field that doesn't apply is disabled.
+      function showRegions(applies) {
+        regionField.hidden = !applies;
+        region.disabled = !applies;
+      }
+
+      // Each change bumps the token so a slow response for an earlier choice
+      // can't overwrite the lists for the current one.
+      var loadToken = 0;
+
+      function loadCities(selectedCity) {
+        var token = ++loadToken;
+        resetCities();
+        if (!region.value) return Promise.resolve();
+        return loadOptions({ country: country.value, region: region.value }).then(
+          function (result) {
+            if (token === loadToken) showCities(result.cities, selectedCity);
+          }
+        );
+      }
+
+      function loadRegions(selectedRegion, selectedCity) {
+        var token = ++loadToken;
+        fillSelect(region, [], messages.statePlaceholder, "");
+        showRegions(true);
+        resetCities();
+        if (!country.value) return Promise.resolve();
+        return loadOptions({ country: country.value }).then(function (result) {
+          if (token !== loadToken) return;
+          showRegions(result.regions.length > 0);
+          fillSelect(
+            region,
+            result.regions.map(function (entry) {
+              return { value: entry.code, label: entry.name };
+            }),
+            messages.statePlaceholder,
+            selectedRegion
+          );
+          if (result.regions.length) return loadCities(selectedCity);
+          showCities(result.cities, selectedCity);
+        });
+      }
+
+      function addressLoadFailed(error) {
+        console.error(error);
+        showBanner("critical", messages.addressLoadError);
+      }
+
+      // The dial code follows the address country until the customer picks
+      // one themselves (e.g. a US company with a Canadian phone number).
+      var phoneCountryChosen = false;
+
+      country.addEventListener("change", function () {
+        loadRegions("", "").catch(addressLoadFailed);
+        if (!phoneCountryChosen && country.value) {
+          phoneCountry.value = country.value;
+          showDialCode();
+          verifyPhone();
+        }
+      });
+      phoneCountry.addEventListener("change", function () {
+        phoneCountryChosen = true;
+        showDialCode();
+        verifyPhone();
+      });
+      region.addEventListener("change", function () {
+        loadCities("").catch(addressLoadFailed);
       });
 
+      // Preselect the signed-in customer's default address, or the
+      // storefront's country for guests.
+      loadOptions({})
+        .then(function (result) {
+          countries = result.countries;
+          fillSelect(
+            country,
+            countries.map(function (entry) {
+              return { value: entry.code, label: entry.name };
+            }),
+            messages.countryPlaceholder,
+            root.dataset.country
+          );
+          fillSelect(
+            phoneCountry,
+            countries
+              .filter(function (entry) {
+                return entry.phoneCode;
+              })
+              .map(function (entry) {
+                return {
+                  value: entry.code,
+                  label: entry.name + " (+" + entry.phoneCode + ")",
+                };
+              }),
+            messages.countryPlaceholder,
+            country.value || "US"
+          );
+          // Drop the placeholder: there is always a dial code.
+          phoneCountry.remove(0);
+          showDialCode();
+          return loadRegions(root.dataset.province, root.dataset.city);
+        })
+        .catch(addressLoadFailed);
+
+      // The form is novalidate, so required fields get inline messages
+      // instead of the browser's tooltips. Messages are only updated on
+      // submit, so they stay put while the customer fixes a field. A state or
+      // city field is disabled only while it doesn't apply, so disabled ones
+      // are skipped when validating rather than left out here.
+      var fields = Array.prototype.filter.call(form.elements, function (el) {
+        return el.required;
+      });
+
+      // Errors the submit endpoint returned, kept until that field changes.
+      var serverErrors = {};
+
+      // Names in any script: letters, spaces, apostrophes, periods, hyphens.
+      var namePattern = /^[\p{L}\p{M}][\p{L}\p{M}\s'’.\-]*$/u;
+
       function fieldError(el) {
+        if (el.disabled) return "";
         var value = el.value.trim();
+        var serverError = serverErrors[el.name];
+        if (serverError && serverError.value === value) return serverError.message;
         if (!value) {
-          var label = form.querySelector('label[for="' + el.id + '"]');
+          // The free-text city shares the city field's label.
+          var label =
+            form.querySelector('label[for="' + el.id + '"]') ||
+            el.closest(".b2b-register__field").querySelector("label");
           return messages.validation.required.replace(
             "%field%",
             label ? label.textContent.trim() : el.name
           );
         }
-        if (el.type === "email" && el.validity.typeMismatch) {
+        if (el.name === "firstName" && !namePattern.test(value)) {
+          return messages.validation.firstName;
+        }
+        if (el.name === "lastName" && !namePattern.test(value)) {
+          return messages.validation.lastName;
+        }
+        if (
+          el.type === "email" &&
+          (el.validity.typeMismatch || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value))
+        ) {
           return messages.validation.email;
         }
-        if (el.name === "phone" && phoneDigitsOf(value).length !== 10) {
-          return messages.validation.phone;
+        if (
+          el.name === "companyName" &&
+          (value.match(/[\p{L}\p{N}]/gu) || []).length < 2
+        ) {
+          return messages.validation.companyName;
         }
-        if (el.name === "zip" && !/^\d{5}(-\d{4})?$/.test(value)) {
-          return messages.validation.zip;
+        if (
+          el.name === "address1" &&
+          (value.length < 3 || !/[\p{L}\p{N}]/u.test(value))
+        ) {
+          return messages.validation.address;
+        }
+        if (el.name === "city" && !/\p{L}/u.test(value)) {
+          return messages.validation.city;
+        }
+        if (el.name === "phone") {
+          // Quick checks here; the server's answer covers the country's
+          // numbering plan once it arrives.
+          var digitCount = value.replace(/\D/g, "").length;
+          var invalidPhone =
+            digitCount < 4 ||
+            digitCount > 20 ||
+            /[^\d\s().+\-]/.test(value.replace(/\s*(ext\.?|x)\s*\d+$/i, "")) ||
+            (phoneCheck.key === phoneKey() && !phoneCheck.valid);
+          if (invalidPhone) return messages.validation.phone;
+        }
+        if (el.name === "zip") {
+          if (country.value === "US" && !/^\d{5}(-\d{4})?$/.test(value)) {
+            return messages.validation.zip;
+          }
+          if (
+            country.value === "CA" &&
+            !/^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/.test(value)
+          ) {
+            return messages.validation.postalCodeCa;
+          }
+          if (
+            country.value !== "US" &&
+            country.value !== "CA" &&
+            !/^[A-Za-z0-9][A-Za-z0-9 -]{1,9}$/.test(value)
+          ) {
+            return messages.validation.postalCode;
+          }
         }
         return "";
       }
@@ -84,16 +377,9 @@
         error.hidden = true;
         el.closest(".b2b-register__field").appendChild(error);
         el.setAttribute("aria-describedby", error.id);
-
-        // Clear the message as soon as a flagged field is fixed, and check
-        // formats once the customer leaves a field they filled in.
-        el.addEventListener(el.tagName === "SELECT" ? "change" : "input", function () {
-          if (el.getAttribute("aria-invalid") === "true") validateField(el);
-        });
-        el.addEventListener("blur", function () {
-          if (el.value.trim()) validateField(el);
-        });
       });
+
+      phone.addEventListener("blur", verifyPhone);
 
       function showBanner(tone, message) {
         banner.dataset.tone = tone;
@@ -105,6 +391,10 @@
       form.addEventListener("submit", async function (event) {
         event.preventDefault();
         banner.hidden = true;
+
+        button.disabled = true;
+        await verifyPhone();
+        button.disabled = false;
 
         var invalid = fields.filter(function (el) {
           return !validateField(el);
@@ -118,22 +408,21 @@
         var value = function (name) {
           return String(data.get(name) || "").trim();
         };
-        // Send E.164 (+1XXXXXXXXXX).
-        var phoneDigits = phoneDigitsOf(value("phone"));
-
         var payload = {
           firstName: value("firstName"),
           lastName: value("lastName"),
           email: value("email"),
           companyName: value("companyName"),
-          phone: phoneDigits ? "+1" + phoneDigits : "",
+          // The server turns this into E.164 using phoneCountryCode.
+          phone: value("phone"),
           address1: value("address1"),
           address2: [value("address2"), value("address3")]
             .filter(Boolean)
             .join(", "),
           city: value("city"),
           provinceCode: value("provinceCode"),
-          countryCode: "US",
+          countryCode: value("countryCode"),
+          phoneCountryCode: phoneCountry.value,
           zip: value("zip"),
           remoteShoppingAssistance: data.has("remoteAssist"),
           locale: {{ request.locale.iso_code | json }},
@@ -174,6 +463,26 @@
                   )
                 : messages.success
             );
+            return;
+          }
+
+          // Show a field's error under that field.
+          var target =
+            result &&
+            fields.filter(function (el) {
+              return el.name === result.field && !el.disabled;
+            })[0];
+          if (target) {
+            if (target === phone) {
+              phoneCheck = { key: phoneKey(), valid: false };
+            } else {
+              serverErrors[target.name] = {
+                value: target.value.trim(),
+                message: result.error,
+              };
+            }
+            validateField(target);
+            target.focus();
             return;
           }
 

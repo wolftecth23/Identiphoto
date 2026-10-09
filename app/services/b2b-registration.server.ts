@@ -1,4 +1,6 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
+import { shopifyZoneCode } from "./b2b-localization.server";
+import { checkPhone } from "./b2b-phone.server";
 import {
   sendRegistrationEmail,
   smtpMailerFromEnv,
@@ -11,6 +13,8 @@ export type B2bRegistrationPayload = {
   email?: string;
   companyName: string;
   phone?: string;
+  /** Country whose dial code the phone uses; defaults to the address country. */
+  phoneCountryCode?: string;
   address1: string;
   address2?: string;
   city: string;
@@ -246,7 +250,12 @@ const PERSONAL_EMAIL_DOMAINS = new Set([
   "mac.com",
   "proton.me",
   "protonmail.com",
+  "protonmail.ch",
   "pm.me",
+  "aim.com",
+  "hushmail.com",
+  "lycos.com",
+  "usa.net",
   "zoho.com",
   "zohomail.com",
   "zohomail.in",
@@ -259,6 +268,9 @@ const PERSONAL_EMAIL_DOMAINS = new Set([
   "fastmail.com",
   "hey.com",
   "tutanota.com",
+  "tutanota.de",
+  "tutamail.com",
+  "tuta.com",
   "tuta.io",
   "duck.com",
   "web.de",
@@ -276,6 +288,49 @@ const PERSONAL_EMAIL_DOMAINS = new Set([
   "cox.net",
   "charter.net",
   "earthlink.net",
+  "optonline.net",
+  "optimum.net",
+  "rr.com",
+  "roadrunner.com",
+  "twc.com",
+  "spectrum.net",
+  "centurylink.net",
+  "q.com",
+  "frontier.com",
+  "frontiernet.net",
+  "windstream.net",
+  "embarqmail.com",
+  "juno.com",
+  "netzero.net",
+  "netzero.com",
+  "mindspring.com",
+  "prodigy.net",
+  "suddenlink.net",
+  "cableone.net",
+  "mediacombb.net",
+  // Canadian internet providers
+  "sympatico.ca",
+  "bell.net",
+  "videotron.ca",
+  "rogers.com",
+  "shaw.ca",
+  "telus.net",
+  "cogeco.ca",
+  // European internet providers
+  "orange.fr",
+  "wanadoo.fr",
+  "free.fr",
+  "sfr.fr",
+  "laposte.net",
+  "t-online.de",
+  "freenet.de",
+  "btinternet.com",
+  "sky.com",
+  "virginmedia.com",
+  "libero.it",
+  "seznam.cz",
+  "wp.pl",
+  "o2.pl",
 ]);
 
 /** Providers that also run country domains such as yahoo.co.in or outlook.in. */
@@ -327,6 +382,88 @@ export function validateCompanyName(name: string | undefined): string | null {
   return null;
 }
 
+/** Letters (any script), then letters, spaces, apostrophes, periods or hyphens. */
+const PERSON_NAME_PATTERN = /^[\p{L}\p{M}][\p{L}\p{M}\s'’.-]*$/u;
+const PERSON_NAME_MAX_LENGTH = 100;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+/** Postal code format for the country, or "" when it's fine. */
+export function postalCodeError(zip: string, countryCode: string): string {
+  const value = zip.trim();
+  const country = countryCode.trim().toUpperCase();
+  if (country === "US") {
+    return /^\d{5}(-\d{4})?$/.test(value)
+      ? ""
+      : "Enter a valid ZIP code, like 12345 or 12345-6789.";
+  }
+  if (country === "CA") {
+    return /^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/.test(value)
+      ? ""
+      : "Enter a valid postal code, like K1A 0B1.";
+  }
+  return /^[A-Za-z0-9][A-Za-z0-9 -]{1,9}$/.test(value)
+    ? ""
+    : "Please enter a valid postal code.";
+}
+
+/**
+ * Basic checks on what the customer typed, matching the storefront form's.
+ * Returns the first problem with the form field it belongs to.
+ */
+export function registrationFieldError(
+  payload: B2bRegistrationPayload,
+): { field: string; error: string } | null {
+  const names = [
+    ["firstName", payload.firstName, "first name"],
+    ["lastName", payload.lastName, "last name"],
+  ] as const;
+  for (const [field, value, label] of names) {
+    if (
+      value !== undefined &&
+      (value.length > PERSON_NAME_MAX_LENGTH || !PERSON_NAME_PATTERN.test(value))
+    ) {
+      return { field, error: `Please enter a valid ${label}.` };
+    }
+  }
+
+  if (
+    payload.email !== undefined &&
+    (payload.email.length > 254 || !EMAIL_PATTERN.test(payload.email))
+  ) {
+    return {
+      field: "email",
+      error: "Enter a valid email address, like name@example.com.",
+    };
+  }
+
+  const companyNameError = validateCompanyName(payload.companyName);
+  if (companyNameError) {
+    return { field: "companyName", error: companyNameError };
+  }
+
+  const address1 = payload.address1.trim();
+  if (
+    address1.length < 3 ||
+    address1.length > 255 ||
+    !/[\p{L}\p{N}]/u.test(address1)
+  ) {
+    return { field: "address1", error: "Please enter a valid street address." };
+  }
+  if ((payload.address2?.length ?? 0) > 255) {
+    return { field: "address2", error: "Address lines are too long." };
+  }
+
+  const city = payload.city.trim();
+  if (city.length > 255 || !/\p{L}/u.test(city)) {
+    return { field: "city", error: "Please enter a valid city." };
+  }
+
+  const zipError = postalCodeError(payload.zip, payload.countryCode);
+  if (zipError) return { field: "zip", error: zipError };
+
+  return null;
+}
+
 /**
  * Serializes company lookup + creation within this process so two
  * simultaneous registrations for one business ("Nike" and "Nike LLC", or two
@@ -346,21 +483,18 @@ function escapeSearchTerm(term: string): string {
   return term.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function formatPhone(
+/**
+ * Phone in E.164 for Shopify, using the country's dial code for national
+ * numbers. Numbers that don't validate are passed through as typed.
+ */
+export function formatPhone(
   phone: string | undefined,
   countryCode: string,
 ): string | undefined {
   const trimmed = phone?.trim();
   if (!trimmed) return undefined;
-  if (trimmed.startsWith("+")) return trimmed;
-
-  const digits = trimmed.replace(/\D/g, "");
-  if (countryCode.toUpperCase() === "US") {
-    if (digits.length === 10) return `+1${digits}`;
-    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  }
-
-  return trimmed;
+  const check = checkPhone(trimmed, countryCode);
+  return check.valid ? check.formatted : trimmed;
 }
 
 function customerGid(customerId: string): string {
@@ -448,8 +582,8 @@ export function resolveZoneCode(
   const country = countryCode.trim().toUpperCase();
   const compact = trimmed.replace(/\s+/g, " ");
 
-  if (/^[A-Za-z0-9]{1,3}$/.test(compact)) {
-    return compact.toUpperCase();
+  if (/^([A-Za-z]{2}-)?[A-Za-z0-9]{1,4}$/.test(compact)) {
+    return shopifyZoneCode(country, compact);
   }
 
   const normalized = compact.toLowerCase();
@@ -480,7 +614,7 @@ function buildCustomerMailingAddress(
     ...(provinceCode ? { provinceCode } : {}),
     countryCode: payload.countryCode,
     zip: payload.zip,
-    phone: formatPhone(payload.phone, payload.countryCode),
+    phone: formatPhone(payload.phone, payload.phoneCountryCode || payload.countryCode),
     firstName: firstName || undefined,
     lastName: lastName || undefined,
   };
@@ -500,7 +634,7 @@ function buildCompanyLocationAddress(
     ...(zoneCode ? { zoneCode } : {}),
     countryCode: payload.countryCode,
     zip: payload.zip,
-    phone: formatPhone(payload.phone, payload.countryCode),
+    phone: formatPhone(payload.phone, payload.phoneCountryCode || payload.countryCode),
     firstName: firstName || undefined,
     lastName: lastName || undefined,
   };
@@ -1050,7 +1184,7 @@ export async function linkCustomerToB2bCompany(
                 customer.firstName,
                 customer.lastName,
               ),
-              phone: formatPhone(payload.phone, payload.countryCode),
+              phone: formatPhone(payload.phone, payload.phoneCountryCode || payload.countryCode),
             },
           },
         },
@@ -1383,7 +1517,7 @@ async function createStorefrontCustomer(
         firstName,
         lastName,
         email,
-        phone: formatPhone(payload.phone, payload.countryCode),
+        phone: formatPhone(payload.phone, payload.phoneCountryCode || payload.countryCode),
         addresses: [
           {
             ...buildCustomerMailingAddress(payload, firstName, lastName),
@@ -1414,7 +1548,9 @@ export type RegistrationCustomer = {
   firstName: string;
   lastName: string;
   email: string;
+  countryCode: string;
   provinceCode: string;
+  city: string;
   /** Name of the first company the customer is a contact of, if any. */
   companyName: string | null;
 };
@@ -1430,7 +1566,11 @@ export async function getRegistrationCustomer(
         firstName?: string | null;
         lastName?: string | null;
         email?: string | null;
-        defaultAddress?: { provinceCode?: string | null } | null;
+        defaultAddress?: {
+          countryCodeV2?: string | null;
+          provinceCode?: string | null;
+          city?: string | null;
+        } | null;
         companyContactProfiles: { company: { name: string } }[];
       } | null;
     };
@@ -1446,7 +1586,9 @@ export async function getRegistrationCustomer(
           lastName
           email
           defaultAddress {
+            countryCodeV2
             provinceCode
+            city
           }
           companyContactProfiles {
             company {
@@ -1466,7 +1608,9 @@ export async function getRegistrationCustomer(
     firstName: customer.firstName ?? "",
     lastName: customer.lastName ?? "",
     email: customer.email ?? "",
+    countryCode: customer.defaultAddress?.countryCodeV2 ?? "",
     provinceCode: customer.defaultAddress?.provinceCode ?? "",
+    city: customer.defaultAddress?.city ?? "",
     companyName: customer.companyContactProfiles[0]?.company.name ?? null,
   };
 }
@@ -1529,6 +1673,7 @@ export function parseB2bRegistrationPayload(
     email: str("email") || undefined,
     companyName,
     phone: str("phone") || undefined,
+    phoneCountryCode: str("phoneCountryCode") || undefined,
     address1,
     address2: str("address2") || undefined,
     city,

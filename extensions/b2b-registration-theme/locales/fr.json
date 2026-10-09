@@ -20,6 +20,7 @@
       "remote_assist": "Autoriser l'assistance à distance pour les achats",
       "company": "Entreprise",
       "phone": "Numéro de téléphone",
+      "phone_country": "Indicatif téléphonique du pays",
       "street_address": "Adresse",
       "address_line_2": "Complément d'adresse (facultatif)",
       "address_line_3": "Complément d'adresse 2 (facultatif)",
@@ -27,19 +28,30 @@
       "state_province": "État/Province",
       "state_placeholder": "Veuillez sélectionner une région, un état ou une province.",
       "city": "Ville",
-      "zip": "Code postal"
+      "zip": "Code postal",
+      "country_placeholder": "Sélectionnez un pays",
+      "city_placeholder": "Sélectionnez une ville",
+      "loading": "Chargement…"
     },
     "messages": {
       "submit_error": "Impossible de terminer l'inscription. Réessayez.",
       "success": "Votre compte et votre profil entreprise ont été enregistrés.",
       "success_joined_company": "Votre compte a été enregistré et ajouté à l'entreprise existante %companyName%.",
-      "sign_in_after_register": "Connectez-vous avec l'adresse courriel utilisée pour commencer à commander."
+      "sign_in_after_register": "Connectez-vous avec l'adresse courriel utilisée pour commencer à commander.",
+      "address_load_error": "Impossible de charger les options d'adresse. Actualisez la page et réessayez."
     },
     "validation": {
       "required": "Le champ « %field% » est obligatoire.",
       "email": "Entrez une adresse courriel valide, par exemple nom@exemple.com.",
-      "phone": "Entrez un numéro de téléphone valide à 10 chiffres.",
-      "zip": "Entrez un code ZIP valide, par exemple 12345 ou 12345-6789."
+      "phone": "Veuillez entrer un numéro valide.",
+      "zip": "Entrez un code ZIP valide, par exemple 12345 ou 12345-6789.",
+      "postal_code_ca": "Entrez un code postal valide, par exemple K1A 0B1.",
+      "first_name": "Veuillez entrer un prénom valide.",
+      "last_name": "Veuillez entrer un nom valide.",
+      "company_name": "Le nom de l'entreprise doit contenir au moins 2 lettres ou chiffres.",
+      "address": "Veuillez entrer une adresse valide.",
+      "city": "Veuillez entrer une ville valide.",
+      "postal_code": "Veuillez entrer un code postal valide."
     }
   }
 }

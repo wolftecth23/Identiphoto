@@ -32,9 +32,15 @@ importers:
       '@shopify/shopify-app-session-storage-prisma':
         specifier: ^11.0.0
         version: 11.0.0(@prisma/client@6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3))(@shopify/shopify-api@15.0.0)(@shopify/shopify-app-session-storage@7.0.0(@shopify/shopify-api@15.0.0))(prisma@6.19.3(typescript@5.9.3))
+      country-state-city:
+        specifier: ^3.2.1
+        version: 3.2.1
       isbot:
         specifier: ^5.1.31
         version: 5.2.2
+      libphonenumber-js:
+        specifier: ^1.13.14
+        version: 1.13.14
       nodemailer:
         specifier: ^10.0.15
         version: 10.0.15
@@ -1850,6 +1856,9 @@ packages:
       typescript:
         optional: true
 
+  country-state-city@3.2.1:
+    resolution: {integrity: sha512-kxbanqMc6izjhc/EHkGPCTabSPZ2G6eG4/97akAYHJUN4stzzFEvQPZoF8oXDQ+10gM/O/yUmISCR1ZVxyb6EA==}
+
   cross-fetch@3.2.0:
     resolution: {integrity: sha512-Q+xVJLoGOeIMXZmbUK4HYk+69cQH6LudR0Vu/pRm2YlU/hDV9CiS0gKUMaWY5f2NeUH9C1nV3bsTlCo0FsTV1Q==}
 
@@ -2745,6 +2754,9 @@ packages:
   levn@0.4.1:
     resolution: {integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==}
     engines: {node: '>= 0.8.0'}
+
+  libphonenumber-js@1.13.14:
+    resolution: {integrity: sha512-llihgCcx0BFLksecLP+x1J+6JDE1GsXS1RN/LoPF6qcwpeQcnjj0lcvZxY8AzbEpYwyZWPZW/nDuqkqzm3amiw==}
 
   lines-and-columns@1.2.4:
     resolution: {integrity: sha512-7ylylesZQ/PV29jhEDl3Ufjo6ZX7gCqJr5F7PKrqc93v7fzSymt1BpwEU8nAUXs8qzzvqhbjhK5QZg6Mt/HkBg==}
@@ -5829,6 +5841,8 @@ snapshots:
     optionalDependencies:
       typescript: 5.9.3
 
+  country-state-city@3.2.1: {}
+
   cross-fetch@3.2.0:
     dependencies:
       node-fetch: 2.7.0
@@ -6922,6 +6936,8 @@ snapshots:
     dependencies:
       prelude-ls: 1.2.1
       type-check: 0.4.0
+
+  libphonenumber-js@1.13.14: {}
 
   lines-and-columns@1.2.4: {}
 

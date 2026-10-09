@@ -447,6 +447,17 @@ describe("personal mailboxes never match by domain", () => {
     shop.addCompany("Yahoo Buyers Co", "2025-01-01T00:00:00Z", ["buyer@yahoo.co.in"]);
     await expectNewCompany(shop, "Acme Corp", "someone@yahoo.co.in");
   });
+
+  test(`"Acme Corp" + someone@optonline.net -> NEW company (internet provider mailbox)`, async () => {
+    const shop = seededShop();
+    shop.addCompany("Optimum Buyers Co", "2025-01-01T00:00:00Z", ["buyer@optonline.net"]);
+    await expectNewCompany(shop, "Acme Corp", "someone@optonline.net");
+  });
+
+  test("free mailbox still joins by company name", async () => {
+    const shop = seededShop();
+    await expectJoins(shop, "Nike Inc.", "buyer@sympatico.ca", NIKE);
+  });
 });
 
 describe("registrations seconds apart (before Shopify's search index catches up)", () => {
@@ -500,6 +511,10 @@ describe("helpers", () => {
     assert.equal(businessEmailDomain("ronak@gmail.com"), null);
     assert.equal(businessEmailDomain("ronak@outlook.in"), null);
     assert.equal(businessEmailDomain("ronak@yahoo.co.in"), null);
+    assert.equal(businessEmailDomain("ronak@protonmail.ch"), null);
+    assert.equal(businessEmailDomain("ronak@rr.com"), null);
+    assert.equal(businessEmailDomain("ronak@videotron.ca"), null);
+    assert.equal(businessEmailDomain("ronak@orange.fr"), null);
     assert.equal(businessEmailDomain("not-an-email"), null);
     assert.equal(businessEmailDomain(undefined), null);
   });

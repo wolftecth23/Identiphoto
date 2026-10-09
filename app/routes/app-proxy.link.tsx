@@ -1,10 +1,13 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
+import { addressAreaError } from "../services/b2b-localization.server";
+import { checkPhone } from "../services/b2b-phone.server";
 import {
   parseB2bRegistrationPayload,
   ProtectedCustomerDataAccessError,
   protectedCustomerDataHelpMessage,
   registerB2bCustomer,
+  registrationFieldError,
 } from "../services/b2b-registration.server";
 
 /**
@@ -84,6 +87,31 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
   }
 
+  const fieldError = registrationFieldError(payload);
+  if (fieldError) {
+    return jsonResponse({ ok: false, ...fieldError }, 422);
+  }
+
+  const addressError = addressAreaError(payload);
+  if (addressError) {
+    return jsonResponse({ ok: false, error: addressError }, 422);
+  }
+
+  if (payload.phone) {
+    const phone = checkPhone(
+      payload.phone,
+      payload.phoneCountryCode || payload.countryCode,
+    );
+    if (!phone.valid) {
+      return jsonResponse(
+        { ok: false, field: "phone", error: "Please enter a valid number." },
+        422,
+      );
+    }
+    payload.phone = phone.formatted;
+    payload.phoneCountryCode = phone.countryCode;
+  }
+
   try {
     const result = await registerB2bCustomer(admin, customerId, payload);
 
@@ -100,7 +128,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           ok: false,
           code: "PROTECTED_CUSTOMER_DATA_REQUIRED",
           error: protectedCustomerDataHelpMessage(),
-          helpUrl: "https://shopify.dev/docs/apps/launch/protected-customer-data",
+          helpUrl:
+            "https://shopify.dev/docs/apps/launch/protected-customer-data",
         },
         403,
       );

@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { authenticate, unauthenticated } from "../shopify.server";
-import { getProvincesForCountry } from "../services/b2b-localization.server";
+import { listRegions } from "../services/b2b-localization.server";
 import {
   ProtectedCustomerDataAccessError,
   parseB2bRegistrationPayload,
@@ -64,30 +64,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     );
   }
 
-  let session;
-  try {
-    ({ session } = await unauthenticated.admin(shop));
-  } catch {
-    return cors(
-      jsonBody(
-        {
-          ok: false,
-          error: "Install this app on the store to load address regions.",
-        },
-        401,
-      ),
-    );
-  }
-
-  try {
-    const provinces = await getProvincesForCountry(session, countryCode);
-    return cors(jsonBody({ ok: true, provinces }));
-  } catch (error) {
-    console.error("B2B localization lookup failed", error);
-    const message =
-      error instanceof Error ? error.message : "Could not load regions.";
-    return cors(jsonBody({ ok: false, error: message }, 500));
-  }
+  return cors(jsonBody({ ok: true, provinces: listRegions(countryCode) }));
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
