@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { beforeEach, describe, test } from "vitest";
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import {
+  approveRegistration,
+  listPendingRegistrations,
+  rejectRegistration,
+} from "./b2b-approval.server";
+import {
   buildRegistrationEmail,
   smtpConfigFromEnv,
   type MailMessage,
@@ -9,6 +14,8 @@ import {
 import {
   businessEmailDomain,
   companyNameMatchRank,
+  prepareRegistrationPayload,
+  REGISTRATION_TAGS,
   registerB2bCustomer,
   type B2bRegistrationOptions,
   type B2bRegistrationPayload,
@@ -25,7 +32,12 @@ type FakeCustomer = {
   firstName: string;
   lastName: string;
   email: string;
+  phone?: string;
+  note?: string;
+  locale?: string;
+  tags: string[];
   addressCompany?: string;
+  addressPhone?: string;
   indexed: boolean;
 };
 
@@ -33,30 +45,102 @@ type FakeCompany = {
   id: string;
   name: string;
   createdAt: string;
+  note?: string;
+  locationPhone?: string;
   contactCustomerIds: string[];
+  /** Customer ID -> CompanyContact ID. */
+  contactIds: Map<string, string>;
+  /** Customer IDs whose contact has a role at the location (can order). */
+  orderingCustomerIds: Set<string>;
+  /** "namespace.key" -> value. */
+  metafields: Map<string, string>;
   indexed: boolean;
 };
+
+/** The company fields IDentiphoto defined in their admin (Fig. 6). */
+const COMPANY_DEFINITIONS = [
+  {
+    name: "B2B account status",
+    namespace: "custom",
+    key: "b2b_account_status",
+    type: { name: "single_line_text_field" },
+    validations: [
+      { name: "choices", value: JSON.stringify(["Pending approval", "Approved", "Rejected"]) },
+    ],
+  },
+  {
+    name: "Approved by",
+    namespace: "custom",
+    key: "approved_by",
+    type: { name: "single_line_text_field" },
+    validations: [],
+  },
+  {
+    name: "Approved on",
+    namespace: "custom",
+    key: "approved_on",
+    type: { name: "date" },
+    validations: [],
+  },
+  {
+    name: "Credit limit",
+    namespace: "custom",
+    key: "credit_limit",
+    type: { name: "money" },
+    validations: [],
+  },
+];
 
 class FakeShop {
   customers: FakeCustomer[] = [];
   companies: FakeCompany[] = [];
+  companyDefinitions: typeof COMPANY_DEFINITIONS = COMPANY_DEFINITIONS;
+  /** Names of the operations sent, in order. */
+  operations: string[] = [];
   private nextId = 1;
   private clock = Date.parse("2026-10-08T00:00:00Z");
 
+  /** An approved company whose contacts can already order. */
   addCompany(name: string, createdAt: string, contactEmails: string[] = []) {
+    const company = this.newCompany(name, createdAt, true);
+    company.metafields.set("custom.b2b_account_status", "Approved");
+    for (const email of contactEmails) {
+      const customer = this.addCustomer(email, true);
+      this.addContact(company, customer.id);
+      company.orderingCustomerIds.add(customer.id);
+    }
+    return company;
+  }
+
+  private newCompany(name: string, createdAt: string, indexed: boolean) {
     const company: FakeCompany = {
       id: `gid://shopify/Company/${this.nextId++}`,
       name,
       createdAt,
       contactCustomerIds: [],
-      indexed: true,
+      contactIds: new Map(),
+      orderingCustomerIds: new Set(),
+      metafields: new Map(),
+      indexed,
     };
     this.companies.push(company);
-    for (const email of contactEmails) {
-      const customer = this.addCustomer(email, true);
-      company.contactCustomerIds.push(customer.id);
-    }
     return company;
+  }
+
+  private addContact(company: FakeCompany, customerId: string) {
+    const contactId = `gid://shopify/CompanyContact/${this.nextId++}`;
+    company.contactCustomerIds.push(customerId);
+    company.contactIds.set(customerId, contactId);
+    return contactId;
+  }
+
+  private contact(contactId: string) {
+    for (const company of this.companies) {
+      for (const [customerId, id] of company.contactIds) {
+        if (id === contactId) return { company, customerId };
+      }
+    }
+    throw new Error(`No contact ${contactId}`);
   }
 
   addCustomer(email: string, indexed: boolean) {
@@ -65,6 +149,7 @@ class FakeShop {
       firstName: "Test",
       lastName: "Person",
       email,
+      tags: [],
       indexed,
     };
     this.customers.push(customer);
@@ -83,6 +168,10 @@ class FakeShop {
 
   customerByEmail(email: string) {
     return this.customers.find((customer) => customer.email === email);
+  }
+
+  customerById(id: string) {
+    return this.customers.find((customer) => customer.id === id);
   }
 
   private companiesOf(customerId: string) {
@@ -106,6 +195,7 @@ class FakeShop {
       options?: { variables?: Record<string, unknown> },
     ) => {
       const operation = query.match(/(?:query|mutation)\s+(\w+)/)?.[1];
+      this.operations.push(operation ?? "");
       const data = this.handle(operation ?? "", options?.variables ?? {});
       return new Response(JSON.stringify({ data }));
     };
@@ -189,10 +279,31 @@ class FakeShop {
       }
 
       case "B2bRegistrationCustomerCreate": {
-        const customer = this.addCustomer(variables.input.email, false);
-        customer.firstName = variables.input.firstName;
-        customer.lastName = variables.input.lastName;
-        customer.addressCompany = variables.input.addresses[0].company;
+        const input = variables.input;
+        // Like Shopify: a customer's phone must be E.164 and unique.
+        if (input.phone !== undefined) {
+          const message = !/^\+\d{8,15}$/.test(input.phone)
+            ? "Phone is invalid"
+            : this.customers.some((entry) => entry.phone === input.phone)
+              ? "Phone has already been taken"
+              : null;
+          if (message) {
+            return {
+              customerCreate: {
+                customer: null,
+                userErrors: [{ field: ["phone"], message }],
+              },
+            };
+          }
+        }
+        const customer = this.addCustomer(input.email, false);
+        customer.firstName = input.firstName;
+        customer.lastName = input.lastName;
+        customer.phone = input.phone;
+        customer.note = input.note;
+        customer.locale = input.locale;
+        customer.addressCompany = input.addresses[0].company;
+        customer.addressPhone = input.addresses[0].phone;
         return { customerCreate: { customer: { id: customer.id }, userErrors: [] } };
       }
 
@@ -207,6 +318,7 @@ class FakeShop {
             firstName: customer.firstName,
             lastName: customer.lastName,
             email: customer.email,
+            tags: customer.tags,
             companyContactProfiles: this.companiesOf(customer.id).map(
               (company) => ({ company: { id: company.id } }),
             ),
@@ -215,14 +327,13 @@ class FakeShop {
       }
 
       case "B2bRegistrationCompanyCreate": {
-        const company: FakeCompany = {
-          id: `gid://shopify/Company/${this.nextId++}`,
-          name: variables.input.company.name,
-          createdAt: this.now(),
-          contactCustomerIds: [],
-          indexed: false,
-        };
-        this.companies.push(company);
+        const company = this.newCompany(
+          variables.input.company.name,
+          this.now(),
+          false,
+        );
+        company.note = variables.input.company.note;
+        company.locationPhone = variables.input.companyLocation.phone;
         return {
           companyCreate: {
             company: { id: company.id, name: company.name },
@@ -243,28 +354,140 @@ class FakeShop {
         const company = this.companies.find(
           (entry) => entry.id === variables.companyId,
         )!;
-        company.contactCustomerIds.push(variables.customerId);
+        const contactId = this.addContact(company, variables.customerId);
         return {
           companyAssignCustomerAsContact: {
-            companyContact: { id: `gid://shopify/CompanyContact/${this.nextId++}` },
+            companyContact: { id: contactId },
             userErrors: [],
           },
         };
       }
 
-      case "B2bRegistrationCompanyRole":
+      case "B2bRegistrationTagCustomer":
+      case "B2bRegistrationUntagCustomer": {
+        const customer = this.customerById(variables.id)!;
+        const tags = variables.tags as string[];
+        customer.tags =
+          operation === "B2bRegistrationTagCustomer"
+            ? [...new Set([...customer.tags, ...tags])]
+            : customer.tags.filter((tag) => !tags.includes(tag));
         return {
-          company: {
-            defaultRole: { id: "gid://shopify/CompanyContactRole/1" },
-            contactRoles: { nodes: [] },
-            locations: { nodes: [{ id: "gid://shopify/CompanyLocation/1" }] },
+          [operation === "B2bRegistrationTagCustomer" ? "tagsAdd" : "tagsRemove"]: {
+            userErrors: [],
           },
         };
+      }
 
-      case "B2bRegistrationAssignRole":
-        return { companyContactAssignRole: { userErrors: [] } };
+      case "B2bRegistrationCompanyFieldDefinitions":
+        return { metafieldDefinitions: { nodes: this.companyDefinitions } };
+
+      case "B2bRegistrationSetCompanyFields": {
+        for (const field of variables.metafields) {
+          const company = this.companies.find((entry) => entry.id === field.ownerId)!;
+          company.metafields.set(`${field.namespace}.${field.key}`, field.value);
+        }
+        return { metafieldsSet: { userErrors: [] } };
+      }
+
+      case "B2bPendingRegistrations": {
+        const tag = (variables.query as string).match(/tag:'(.*)'/)![1];
+        return {
+          customers: {
+            nodes: this.customers
+              .filter((customer) => customer.tags.includes(tag))
+              .map((customer) => ({
+                id: customer.id,
+                displayName: `${customer.firstName} ${customer.lastName}`,
+                defaultEmailAddress: { emailAddress: customer.email },
+                createdAt: "2026-10-10T00:00:00Z",
+                note: customer.note ?? null,
+                companyContactProfiles: this.companiesOf(customer.id).map(
+                  (company) => ({
+                    company: {
+                      id: company.id,
+                      name: company.name,
+                      contactsCount: { count: company.contactCustomerIds.length },
+                      locations: {
+                        nodes: [{ phone: company.locationPhone ?? null, shippingAddress: null }],
+                      },
+                    },
+                  }),
+                ),
+              })),
+          },
+        };
+      }
+
+      case "B2bApprovalCustomer": {
+        const customer = this.customerById(variables.id);
+        if (!customer) return { customer: null };
+        return {
+          customer: {
+            id: customer.id,
+            firstName: customer.firstName,
+            locale: customer.locale ?? "en",
+            defaultEmailAddress: { emailAddress: customer.email },
+            companyContactProfiles: this.companiesOf(customer.id).map(
+              (company) => ({
+                id: company.contactIds.get(customer.id),
+                roleAssignments: {
+                  nodes: company.orderingCustomerIds.has(customer.id)
+                    ? [{ id: "gid://shopify/CompanyContactRoleAssignment/1" }]
+                    : [],
+                },
+                company: {
+                  id: company.id,
+                  name: company.name,
+                  contactsCount: { count: company.contactCustomerIds.length },
+                  defaultRole: null,
+                  contactRoles: {
+                    nodes: [
+                      { id: "gid://shopify/CompanyContactRole/1", name: "Location admin" },
+                      { id: "gid://shopify/CompanyContactRole/2", name: "Ordering only" },
+                    ],
+                  },
+                  locations: { nodes: [{ id: "gid://shopify/CompanyLocation/1" }] },
+                },
+              }),
+            ),
+          },
+        };
+      }
+
+      case "B2bApprovalAssignRole": {
+        const { company, customerId } = this.contact(variables.companyContactId);
+        assert.equal(variables.companyContactRoleId, "gid://shopify/CompanyContactRole/2");
+        company.orderingCustomerIds.add(customerId);
+        return {
+          companyContactAssignRole: {
+            companyContactRoleAssignment: { id: `gid://shopify/CompanyContactRoleAssignment/${this.nextId++}` },
+            userErrors: [],
+          },
+        };
+      }
+
+      case "B2bApprovalCompanyStatus": {
+        const company = this.companies.find((entry) => entry.id === variables.id)!;
+        const value = company.metafields.get(`${variables.namespace}.${variables.key}`);
+        return { company: { metafield: value === undefined ? null : { value } } };
+      }
+
+      case "B2bApprovalRemoveContact": {
+        const { company, customerId } = this.contact(variables.companyContactId);
+        company.contactCustomerIds = company.contactCustomerIds.filter(
+          (id) => id !== customerId,
+        );
+        company.contactIds.delete(customerId);
+        return {
+          companyContactRemoveFromCompany: {
+            removedCompanyContactId: variables.companyContactId,
+            userErrors: [],
+          },
+        };
+      }
 
       case "B2bRegistrationEmailShop":
+      case "B2bApprovalEmailShop":
         return {
           shop: {
             name: "Identiphoto",
@@ -560,11 +783,11 @@ describe("registration confirmation email", () => {
     assert.equal(email.from, "Identiphoto <no-reply@identiphoto.test>");
     assert.equal(
       email.subject,
-      "Your business registration with Identiphoto is complete",
+      "We received your business registration with Identiphoto",
     );
     assert.match(email.text, /^Hi New,/);
-    assert.match(email.text, /We created the company Globex/);
-    assert.match(email.text, /Sign in with hank@globex\.com/);
+    assert.match(email.text, /application for the company Globex is pending approval/);
+    assert.match(email.text, /Once approved, sign in with hank@globex\.com/);
     assert.match(email.text, /https:\/\/shop\.identiphoto\.test\/account/);
     assert.match(email.html, /href="https:\/\/shop\.identiphoto\.test\/account"/);
   });
@@ -579,7 +802,7 @@ describe("registration confirmation email", () => {
     assert.equal(sent.length, 1);
     assert.match(
       sent[0].text,
-      /added to the existing company Shiv Technolabs PVT\. LTD\./,
+      /request to join the existing company Shiv Technolabs PVT\. LTD\. is pending approval/,
     );
     assert.doesNotMatch(sent[0].text, /Acme/);
   });
@@ -594,10 +817,10 @@ describe("registration confirmation email", () => {
 
     assert.equal(
       sent[0].subject,
-      "Votre inscription professionnelle chez Identiphoto est confirmée",
+      "Nous avons reçu votre inscription professionnelle chez Identiphoto",
     );
     assert.match(sent[0].text, /^Bonjour New,/);
-    assert.match(sent[0].text, /ajouté à l'entreprise existante Nike LLC/);
+    assert.match(sent[0].text, /rejoindre l'entreprise existante Nike LLC est en attente/);
   });
 
   test("customer already on the company -> no email", async () => {
@@ -678,5 +901,223 @@ describe("registration confirmation email", () => {
       true,
     );
     assert.throws(() => smtpConfigFromEnv({ SMTP_HOST: "smtp.example.com" }));
+  });
+});
+
+describe("new registrations wait for approval (client issue #3)", () => {
+  test("new company -> pending: contact without a role, tagged, status field Pending", async () => {
+    const shop = seededShop();
+    const { result, company } = await register(shop, "Globex", "hank@globex.com");
+    const hank = shop.customerByEmail("hank@globex.com")!;
+
+    assert.ok(result.ok);
+    assert.equal(result.status, "pending");
+    assert.deepEqual(hank.tags, [REGISTRATION_TAGS.pending]);
+    assert.equal(company.orderingCustomerIds.size, 0, "contact must not be able to order yet");
+    assert.equal(company.metafields.get("custom.b2b_account_status"), "Pending approval");
+    assert.ok(
+      !shop.operations.some((operation) => /AssignRole/.test(operation)),
+      "registration must not assign an ordering role",
+    );
+  });
+
+  test("joining an existing company -> pending too; the company keeps its status", async () => {
+    const shop = seededShop();
+    const { result, company } = await register(shop, "Acme", "ronak@shivlab.com");
+
+    assert.ok(result.ok);
+    assert.equal(result.status, "pending");
+    assert.equal(result.created, false);
+    assert.equal(company.name, SHIV);
+    const ronak = shop.customerByEmail("ronak@shivlab.com")!;
+    assert.ok(!company.orderingCustomerIds.has(ronak.id));
+    assert.equal(company.metafields.get("custom.b2b_account_status"), "Approved");
+  });
+
+  test("the store has no status fields -> registration still works", async () => {
+    const shop = seededShop();
+    shop.companyDefinitions = [];
+    const { result, company } = await register(shop, "Globex", "hank@globex.com");
+    assert.equal(result.status, "pending");
+    assert.equal(company.metafields.size, 0);
+  });
+
+  test("a signed-in customer still waiting is told so, not 'Active'", async () => {
+    const shop = seededShop();
+    await register(shop, "Globex", "hank@globex.com");
+    const hank = shop.customerByEmail("hank@globex.com")!;
+    const again = await registerB2bCustomer(
+      shop.admin(),
+      hank.id.replace(/\D/g, ""),
+      payload("Globex", "hank@globex.com"),
+      { emailSender: null },
+    );
+    assert.ok(again.ok);
+    assert.equal(again.alreadyLinked, true);
+    assert.equal(again.status, "pending");
+  });
+});
+
+describe("staff approval", () => {
+  test("lists pending registrations with their company", async () => {
+    const shop = seededShop();
+    await register(shop, "Globex", "hank@globex.com");
+    await register(shop, "Acme", "ronak@shivlab.com");
+
+    const pending = await listPendingRegistrations(shop.admin());
+    assert.deepEqual(
+      pending.map((entry) => [entry.email, entry.companies.map((c) => [c.name, c.contactCount])]),
+      [
+        ["hank@globex.com", [["Globex", 1]]],
+        ["ronak@shivlab.com", [[SHIV, 2]]],
+      ],
+    );
+  });
+
+  test("approving a new company -> ordering role, status fields, tag swap, email", async () => {
+    const shop = seededShop();
+    await register(shop, "Globex", "hank@globex.com", { locale: "fr" });
+    const hank = shop.customerByEmail("hank@globex.com")!;
+    const company = shop.companyByName("Globex")!;
+    const { sent, sender } = recordingSender();
+
+    const result = await approveRegistration(shop.admin(), hank.id, "Tom Esler", {
+      emailSender: sender,
+      now: new Date("2026-10-13T15:00:00Z"),
+    });
+
+    assert.deepEqual(result, { ok: true, emailSent: true });
+    assert.ok(company.orderingCustomerIds.has(hank.id));
+    assert.equal(company.metafields.get("custom.b2b_account_status"), "Approved");
+    assert.equal(company.metafields.get("custom.approved_by"), "Tom Esler");
+    assert.equal(company.metafields.get("custom.approved_on"), "2026-10-13");
+    assert.deepEqual(hank.tags, [REGISTRATION_TAGS.approved]);
+    assert.equal(sent.length, 1);
+    // The registrant's storefront language is kept for later emails.
+    assert.equal(sent[0].subject, "Votre compte professionnel chez Identiphoto est approuvé");
+    assert.match(sent[0].text, /Globex a été approuvé/);
+
+    assert.deepEqual(await listPendingRegistrations(shop.admin()), []);
+  });
+
+  test("approving someone who joined keeps the company's original approval", async () => {
+    const shop = seededShop();
+    const company = shop.companyByName(SHIV)!;
+    company.metafields.set("custom.approved_by", "Original Approver");
+    await register(shop, "Acme", "ronak@shivlab.com");
+    const ronak = shop.customerByEmail("ronak@shivlab.com")!;
+
+    const result = await approveRegistration(shop.admin(), ronak.id, "Tom Esler", {
+      emailSender: null,
+    });
+
+    assert.ok(result.ok);
+    assert.ok(company.orderingCustomerIds.has(ronak.id));
+    assert.equal(company.metafields.get("custom.approved_by"), "Original Approver");
+  });
+
+  test("rejecting takes the customer off the company and marks a new company rejected", async () => {
+    const shop = seededShop();
+    await register(shop, "Globex", "hank@globex.com");
+    const hank = shop.customerByEmail("hank@globex.com")!;
+    const company = shop.companyByName("Globex")!;
+
+    const result = await rejectRegistration(shop.admin(), hank.id);
+
+    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(company.contactCustomerIds, []);
+    assert.equal(company.metafields.get("custom.b2b_account_status"), "Rejected");
+    assert.deepEqual(hank.tags, [REGISTRATION_TAGS.rejected]);
+  });
+
+  test("rejecting a join request leaves the company and its other contacts alone", async () => {
+    const shop = seededShop();
+    await register(shop, "Acme", "ronak@shivlab.com");
+    const ronak = shop.customerByEmail("ronak@shivlab.com")!;
+    const company = shop.companyByName(SHIV)!;
+
+    await rejectRegistration(shop.admin(), ronak.id);
+
+    assert.deepEqual(company.contactCustomerIds, [shop.customerByEmail("karan@shivlab.com")!.id]);
+    assert.equal(company.metafields.get("custom.b2b_account_status"), "Approved");
+  });
+});
+
+describe("company phone with an extension (client issues #1 and #6)", () => {
+  /** Registers with a phone the way the storefront endpoint does. */
+  async function registerWithPhone(
+    shop: FakeShop,
+    companyName: string,
+    email: string,
+    phone: string,
+    phoneExt?: string,
+  ) {
+    const prepared = prepareRegistrationPayload({
+      ...payload(companyName, email),
+      city: "Willoughby",
+      provinceCode: "OH",
+      countryCode: "US",
+      zip: "44094",
+      phone,
+      phoneExt,
+    });
+    assert.ok(prepared.ok);
+    return registerB2bCustomer(shop.admin(), null, prepared.payload, {
+      emailSender: null,
+    });
+  }
+
+  test("main line with an extension registers; the extension goes in the notes", async () => {
+    const shop = seededShop();
+    const result = await registerWithPhone(
+      shop,
+      "IDentiphoto LLC",
+      "tom@identiphoto.test",
+      "(440) 555-0100 ext. 214",
+    );
+
+    assert.ok(result.ok, JSON.stringify(result));
+    const tom = shop.customerByEmail("tom@identiphoto.test")!;
+    const company = shop.companyByName("IDentiphoto LLC")!;
+    assert.equal(tom.phone, undefined, "the company line is not the person's own phone");
+    assert.equal(tom.addressPhone, "+14405550100");
+    assert.equal(tom.note, "Phone: +14405550100 ext. 214");
+    assert.equal(company.locationPhone, "+14405550100");
+    assert.equal(company.note, "Phone: +14405550100 ext. 214");
+  });
+
+  test("a colleague registering with the same company phone joins instead of being blocked", async () => {
+    const shop = seededShop();
+    const first = await registerWithPhone(
+      shop,
+      "IDentiphoto LLC",
+      "tom@identiphoto.test",
+      "(440) 555-0100",
+      "214",
+    );
+    const second = await registerWithPhone(
+      shop,
+      "identiphoto",
+      "bill@identiphoto.test",
+      "(440) 555-0100",
+      "215",
+    );
+
+    assert.ok(first.ok && second.ok, JSON.stringify(second));
+    assert.equal(second.created, false);
+    assert.equal(second.companyId, first.companyId);
+    assert.equal(second.status, "pending");
+  });
+
+  test("the extension can also be typed in the phone field itself", async () => {
+    const shop = seededShop();
+    const result = await registerWithPhone(
+      shop,
+      "Globex",
+      "hank@globex.com",
+      "440-555-0100 x9",
+    );
+    assert.ok(result.ok);
+    assert.equal(shop.customerByEmail("hank@globex.com")!.note, "Phone: +14405550100 ext. 9");
   });
 });

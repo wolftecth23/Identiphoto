@@ -4,6 +4,7 @@ import { listRegions } from "../services/b2b-localization.server";
 import {
   ProtectedCustomerDataAccessError,
   parseB2bRegistrationPayload,
+  prepareRegistrationPayload,
   protectedCustomerDataHelpMessage,
   registerB2bCustomer,
 } from "../services/b2b-registration.server";
@@ -114,8 +115,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return cors(jsonBody({ ok: false, error: "Invalid JSON body." }, 400));
   }
 
-  const payload = parseB2bRegistrationPayload(body);
-  if (!payload) {
+  const parsed = parseB2bRegistrationPayload(body);
+  if (!parsed) {
     return cors(
       jsonBody(
         {
@@ -127,6 +128,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       ),
     );
   }
+
+  // Same checks as the storefront form's endpoint (app-proxy.link.tsx).
+  const prepared = prepareRegistrationPayload(parsed);
+  if (!prepared.ok) {
+    return cors(jsonBody(prepared.body, prepared.status));
+  }
+  const { payload } = prepared;
 
   try {
     const result = await registerB2bCustomer(admin, customerId, payload);

@@ -7,6 +7,7 @@
     "business_account_title": "Compte professionnel",
     "status": "Statut",
     "active": "Actif",
+    "pending": "En attente d'approbation",
     "submit": "Créer un compte",
     "sections": {
       "personal": "Informations personnelles",
@@ -17,10 +18,10 @@
       "first_name": "Prénom",
       "last_name": "Nom",
       "email": "Courriel",
-      "remote_assist": "Autoriser l'assistance à distance pour les achats",
       "company": "Entreprise",
       "phone": "Numéro de téléphone",
       "phone_country": "Indicatif téléphonique du pays",
+      "phone_ext": "Poste (facultatif)",
       "street_address": "Adresse",
       "address_line_2": "Complément d'adresse (facultatif)",
       "address_line_3": "Complément d'adresse 2 (facultatif)",
@@ -28,17 +29,19 @@
       "state_province": "État/Province",
       "state_placeholder": "Veuillez sélectionner une région, un état ou une province.",
       "city": "Ville",
+      "suggestions": "Suggestions",
+      "close_suggestions": "Fermer les suggestions",
       "zip": "Code postal",
       "country_placeholder": "Sélectionnez un pays",
-      "city_placeholder": "Sélectionnez une ville",
       "loading": "Chargement…"
     },
     "messages": {
       "submit_error": "Impossible de terminer l'inscription. Réessayez.",
-      "success": "Votre compte et votre profil entreprise ont été enregistrés.",
-      "success_joined_company": "Votre compte a été enregistré et ajouté à l'entreprise existante %companyName%.",
-      "sign_in_after_register": "Connectez-vous avec l'adresse courriel utilisée pour commencer à commander.",
-      "address_load_error": "Impossible de charger les options d'adresse. Actualisez la page et réessayez."
+      "success": "Merci ! Votre inscription a bien été reçue et est en attente d'approbation.",
+      "success_joined_company": "Merci ! Votre demande pour rejoindre %companyName% a bien été reçue et est en attente d'approbation.",
+      "sign_in_after_register": "Vous pouvez vous connecter avec l'adresse courriel utilisée. Les commandes professionnelles seront disponibles une fois votre compte approuvé.",
+      "address_load_error": "Impossible de charger les options d'adresse. Actualisez la page et réessayez.",
+      "pending_review": "Nous examinerons votre demande et vous écrirons dès que votre compte professionnel sera approuvé."
     },
     "validation": {
       "required": "Le champ « %field% » est obligatoire.",

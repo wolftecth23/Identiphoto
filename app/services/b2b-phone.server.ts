@@ -10,8 +10,13 @@ export type PhoneCheck =
       valid: true;
       /** Country the number belongs to; differs from the chosen one when it was typed as +<code>…. */
       countryCode: string;
-      /** E.164 number, plus " ext. N" when an extension was given. */
-      formatted: string;
+      /**
+       * E.164 number without the extension, the only form Shopify accepts in
+       * its phone fields.
+       */
+      e164: string;
+      /** Extension typed after the number ("ext. 12", "x12"), or "". */
+      ext: string;
       /** National format for showing back in the field, e.g. "(212) 555-0123". */
       national: string;
     };
@@ -38,9 +43,14 @@ export function checkPhone(number: string, countryCode: string): PhoneCheck {
   return {
     valid: true,
     countryCode: parsed.country,
-    formatted: parsed.ext
-      ? `${parsed.number} ext. ${parsed.ext}`
-      : parsed.number,
+    e164: parsed.number,
+    ext: parsed.ext ?? "",
     national: parsed.formatNational(),
   };
+}
+
+/** Phone extension as typed in its own field: digits only, up to 10. */
+export function normalizePhoneExt(ext: string | undefined): string {
+  const trimmed = ext?.trim().replace(/^(ext\.?|x)\s*/i, "") ?? "";
+  return /^\d{1,10}$/.test(trimmed) ? trimmed : "";
 }

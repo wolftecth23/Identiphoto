@@ -8,6 +8,19 @@
     assign description = block.settings.description
   endif
   assign field_id = 'b2b-register-' | append: block.id
+  # Registrations wait for staff approval (see the app's "B2B registrations"
+  # page); until then the customer is tagged and can't order for the company.
+  assign registration_pending = false
+  if customer and customer.b2b? == false and customer.tags contains 'b2b-registration-pending'
+    assign registration_pending = true
+  endif
+  # Back to this page after signing in. The new customer accounts login URL
+  # already carries a query string.
+  assign return_separator = '?'
+  if routes.account_login_url contains '?'
+    assign return_separator = '&'
+  endif
+  assign sign_in_url = routes.account_login_url | append: return_separator | append: 'return_url=' | append: request.path
 -%}
 
 {% render 'b2b-registration-styles' %}
@@ -15,12 +28,12 @@
 <div class="b2b-register" {{ block.shopify_attributes }}>
   <div class="b2b-register__header">
     <h2 class="b2b-register__title">{{ heading | escape }}</h2>
-    {%- unless customer.b2b? -%}
+    {%- unless customer.b2b? or registration_pending -%}
       <p class="b2b-register__description">{{ description | escape }}</p>
       {%- unless customer -%}
         <p class="b2b-register__sign-in">
           {{ 'b2b_registration.sign_in_prompt' | t }}
-          <a href="{{ routes.account_login_url }}">{{ 'b2b_registration.sign_in' | t }}</a>
+          <a href="{{ sign_in_url }}">{{ 'b2b_registration.sign_in' | t }}</a>
         </p>
       {%- endunless -%}
     {%- endunless -%}
@@ -44,12 +57,28 @@
         <dd><span class="b2b-register__badge">{{ 'b2b_registration.active' | t }}</span></dd>
       </div>
     </dl>
+  {%- elsif registration_pending -%}
+    <h3 class="b2b-register__subheading">{{ 'b2b_registration.business_account_title' | t }}</h3>
+    <dl class="b2b-register__summary">
+      {%- if customer.default_address.company != blank -%}
+        <div class="b2b-register__summary-row">
+          <dt>{{ 'b2b_registration.fields.company' | t }}</dt>
+          <dd>{{ customer.default_address.company | escape }}</dd>
+        </div>
+      {%- endif -%}
+      <div class="b2b-register__summary-row">
+        <dt>{{ 'b2b_registration.status' | t }}</dt>
+        <dd><span class="b2b-register__badge b2b-register__badge--pending">{{ 'b2b_registration.pending' | t }}</span></dd>
+      </div>
+    </dl>
+    <p class="b2b-register__after-register">{{ 'b2b_registration.messages.pending_review' | t }}</p>
   {%- else -%}
     <div
       data-b2b-register
       data-submit-url="/apps/b2b-register/link"
       data-regions-url="/apps/b2b-register/regions"
       data-phone-url="/apps/b2b-register/phone"
+      data-postal-url="/apps/b2b-register/postal"
       data-country="{{ customer.default_address.country_code | default: localization.country.iso_code | escape }}"
       data-province="{{ customer.default_address.province_code | escape }}"
       data-city="{{ customer.default_address.city | escape }}"
@@ -60,7 +89,8 @@
           "addressLoadError": {{ 'b2b_registration.messages.address_load_error' | t | json }},
           "countryPlaceholder": {{ 'b2b_registration.fields.country_placeholder' | t | json }},
           "statePlaceholder": {{ 'b2b_registration.fields.state_placeholder' | t | json }},
-          "cityPlaceholder": {{ 'b2b_registration.fields.city_placeholder' | t | json }},
+          "suggestions": {{ 'b2b_registration.fields.suggestions' | t | json }},
+          "closeSuggestions": {{ 'b2b_registration.fields.close_suggestions' | t | json }},
           "success": {{ 'b2b_registration.messages.success' | t | json }},
           "successJoinedCompany": {{ 'b2b_registration.messages.success_joined_company' | t | json }},
           "validation": {
@@ -82,6 +112,11 @@
       <div class="b2b-register__banner" role="alert" data-b2b-register-banner hidden></div>
 
       <form class="b2b-register__form" data-b2b-register-form novalidate>
+        {%- comment -%} Left empty by people; bots that fill every field are turned away. {%- endcomment -%}
+        <div class="b2b-register__trap" aria-hidden="true">
+          <label for="{{ field_id }}-website">Website</label>
+          <input id="{{ field_id }}-website" name="website" type="text" tabindex="-1" autocomplete="off">
+        </div>
         <fieldset class="b2b-register__section">
           <legend class="b2b-register__legend">{{ 'b2b_registration.sections.personal' | t }}</legend>
           <div class="b2b-register__grid">
@@ -109,16 +144,22 @@
               <label for="{{ field_id }}-company">{{ 'b2b_registration.fields.company' | t }}</label>
               <input id="{{ field_id }}-company" name="companyName" type="text" autocomplete="organization" maxlength="255" required>
             </div>
-            <div class="b2b-register__field b2b-register__field--full">
-              <label for="{{ field_id }}-phone">{{ 'b2b_registration.fields.phone' | t }}</label>
-              <div class="b2b-register__phone">
-                <div class="b2b-register__phone-prefix">
-                  <span aria-hidden="true" data-b2b-register-phone-prefix>US +1</span>
-                  <select name="phoneCountry" aria-label="{{ 'b2b_registration.fields.phone_country' | t }}" data-b2b-register-phone-country>
-                    <option value="US">United States (+1)</option>
-                  </select>
+            <div class="b2b-register__phone-row b2b-register__field--full">
+              <div class="b2b-register__field">
+                <label for="{{ field_id }}-phone">{{ 'b2b_registration.fields.phone' | t }}</label>
+                <div class="b2b-register__phone">
+                  <div class="b2b-register__phone-prefix">
+                    <span aria-hidden="true" data-b2b-register-phone-prefix>US +1</span>
+                    <select name="phoneCountry" aria-label="{{ 'b2b_registration.fields.phone_country' | t }}" data-b2b-register-phone-country>
+                      <option value="US">United States (+1)</option>
+                    </select>
+                  </div>
+                  <input id="{{ field_id }}-phone" name="phone" type="tel" autocomplete="tel-national" inputmode="tel" maxlength="30" required>
                 </div>
-                <input id="{{ field_id }}-phone" name="phone" type="tel" autocomplete="tel-national" inputmode="tel" maxlength="30" required>
+              </div>
+              <div class="b2b-register__field">
+                <label for="{{ field_id }}-phone-ext">{{ 'b2b_registration.fields.phone_ext' | t }}</label>
+                <input id="{{ field_id }}-phone-ext" name="phoneExt" type="text" inputmode="numeric" autocomplete="tel-extension" maxlength="10">
               </div>
             </div>
           </div>
@@ -152,15 +193,31 @@
               </select>
             </div>
             <div class="b2b-register__field">
-              <label for="{{ field_id }}-city">{{ 'b2b_registration.fields.city' | t }}</label>
-              <select id="{{ field_id }}-city" name="city" required data-b2b-register-city-select>
-                <option value="">{{ 'b2b_registration.fields.city_placeholder' | t }}</option>
-              </select>
-              <input id="{{ field_id }}-city-text" name="city" type="text" autocomplete="address-level2" maxlength="255" aria-label="{{ 'b2b_registration.fields.city' | t }}" required disabled hidden data-b2b-register-city-text>
-            </div>
-            <div class="b2b-register__field">
               <label for="{{ field_id }}-zip">{{ 'b2b_registration.fields.zip' | t }}</label>
               <input id="{{ field_id }}-zip" name="zip" type="text" autocomplete="postal-code" maxlength="10" required>
+            </div>
+            <div class="b2b-register__field b2b-register__combobox">
+              <label for="{{ field_id }}-city">{{ 'b2b_registration.fields.city' | t }}</label>
+              <input
+                id="{{ field_id }}-city"
+                name="city"
+                type="text"
+                autocomplete="address-level2"
+                maxlength="255"
+                required
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded="false"
+                aria-controls="{{ field_id }}-city-suggestions"
+                data-b2b-register-city
+              >
+              <div class="b2b-register__suggestions" data-b2b-register-suggestions hidden>
+                <div class="b2b-register__suggestions-header">
+                  <span>{{ 'b2b_registration.fields.suggestions' | t }}</span>
+                  <button type="button" aria-label="{{ 'b2b_registration.fields.close_suggestions' | t }}" data-b2b-register-suggestions-close>&times;</button>
+                </div>
+                <ul id="{{ field_id }}-city-suggestions" role="listbox" aria-label="{{ 'b2b_registration.fields.city' | t }}"></ul>
+              </div>
             </div>
           </div>
         </fieldset>
@@ -181,13 +238,14 @@
           </div>
           <div class="b2b-register__summary-row">
             <dt>{{ 'b2b_registration.status' | t }}</dt>
-            <dd><span class="b2b-register__badge">{{ 'b2b_registration.active' | t }}</span></dd>
+            <dd><span class="b2b-register__badge b2b-register__badge--pending">{{ 'b2b_registration.pending' | t }}</span></dd>
           </div>
         </dl>
+        <p class="b2b-register__after-register">{{ 'b2b_registration.messages.pending_review' | t }}</p>
         {%- unless customer -%}
           <p class="b2b-register__after-register">
             {{ 'b2b_registration.messages.sign_in_after_register' | t }}
-            <a href="{{ routes.account_login_url }}">{{ 'b2b_registration.sign_in' | t }}</a>
+            <a href="{{ sign_in_url }}">{{ 'b2b_registration.sign_in' | t }}</a>
           </p>
         {%- endunless -%}
       </div>

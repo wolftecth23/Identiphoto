@@ -93,6 +93,25 @@ Guests can use the theme block; signed-in customers should use the **Profile** e
 4. (Optional) **Online Store → Pages** → create a page and add the theme **B2B registration form** block for guest signup.
 5. Test: submit as **guest** (theme) or **logged in** (Profile block) → confirm **Customers** and **Companies** in admin.
 
+### Approval of new registrations
+
+New registrations are **pending** until staff approve them:
+
+- Registering adds the customer to the company (a new one, or an existing one matched by business email domain or company name) **without a role at any location**, so they can't place B2B orders yet. The customer is tagged `b2b-registration-pending`.
+- If the store has company metafields named **B2B account status**, **Approved by** and **Approved on** (Settings → Custom data → Companies), the app fills them in. It finds them by name. If the status field limits its values (for example "Pending approval / Approved / Rejected"), the matching choice is used.
+- Staff review requests in the app's **B2B registrations** page ([`app/routes/app.registrations.tsx`](app/routes/app.registrations.tsx)):
+  - **Approve** assigns the company's ordering role at its location, sets status, Approved by and Approved on, swaps the tag for `b2b-registration-approved`, and emails the customer.
+  - **Reject** removes the customer from the company and tags them `b2b-registration-rejected`.
+- The storefront form shows "Pending approval" to anyone still waiting, including signed-in customers.
+
+### Registration form behaviour
+
+- **Phone:** the company phone is stored in E.164 on the company location and the address. The optional **Ext.** goes in the company and customer notes, because Shopify phone fields can't hold an extension. The phone is not set as the customer's own phone: Shopify requires those to be unique, and colleagues share the main line.
+- **City:** a text field. Cities for the chosen state are offered as suggestions, but any city is accepted.
+- **ZIP/postal code lookup:** for the US and Canada, the city and state are filled in from the ZIP/postal code ([`/apps/b2b-register/postal`](app/routes/app-proxy.postal.tsx)). The data is in `app/data/postal/`, built by `node scripts/build-postal-data.ts` from [GeoNames](https://www.geonames.org) postal code files (CC BY 4.0).
+- **Bot check:** a hidden honeypot field and a minimum fill time. There is no CAPTCHA yet.
+- **Create Account link:** the **Hide registration link** app embed hides the link for signed-in customers, and for guests who registered in that browser.
+
 ### Required access scopes
 
 `write_app_proxy`, `read_companies`, `write_companies`, `read_customers`, `write_customers` (plus existing template scopes).
@@ -112,7 +131,7 @@ Until this is done, the proxy returns `403` with `PROTECTED_CUSTOMER_DATA_REQUIR
 
 ### Registration confirmation email
 
-After a successful registration the customer gets a confirmation email (English, or French on a French storefront) saying whether their company was created or which existing company they joined. It is sent over SMTP; set these in `.env` (and in your hosting environment):
+After a registration the customer gets an email saying it was received and is pending approval. It names the company they applied for or asked to join. A second email goes out when staff approve them. Both are in English, or French when the customer registered on a French storefront. It is sent over SMTP; set these in `.env` (and in your hosting environment):
 
 | Variable | Required | Notes |
 | --- | --- | --- |
@@ -126,7 +145,7 @@ A failed send is logged but does not fail the registration; the response then ha
 
 ### Tests
 
-`npm test` runs the registration tests (company matching and the confirmation email) against an in-memory fake of the Admin API.
+`npm test` runs the registration tests against an in-memory fake of the Admin API. They cover company matching, the pending/approve/reject flow, phone extensions, the postal lookup and the emails.
 
 ## Shopify Dev MCP
 

@@ -90,13 +90,15 @@ export function listCities(countryCode: string, regionCode?: string): string[] {
 }
 
 /**
- * Checks the country/state/city the customer picked against the same lists
+ * Checks the country and state the customer picked against the same lists
  * the form offers. Returns an error message, or null when the address is OK.
+ * The city is typed, with the dataset's cities only offered as suggestions:
+ * the dataset is far from complete (suburbs, villages, new towns), so it
+ * can't be used to reject a city. registrationFieldError checks its format.
  */
 export function addressAreaError(address: {
   countryCode: string;
   provinceCode?: string;
-  city: string;
 }): string | null {
   const country = findCountry(address.countryCode);
   if (!country) return "Select a valid country.";
@@ -105,11 +107,6 @@ export function addressAreaError(address: {
   const regionCode = address.provinceCode?.trim().toUpperCase() ?? "";
   if (regions.length && !regions.some((region) => region.code === regionCode)) {
     return "Select a valid state/province.";
-  }
-
-  const cities = listCities(country.code, regions.length ? regionCode : "");
-  if (cities.length && !cities.includes(address.city.trim())) {
-    return "Select a city from the list.";
   }
 
   return null;

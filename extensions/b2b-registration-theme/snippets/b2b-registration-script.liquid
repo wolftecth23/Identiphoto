@@ -1,5 +1,6 @@
 {% doc %}
-  Address dropdowns and submit handler for the B2B registration block.
+  Address fields, city suggestions, ZIP lookup and submit handler for the
+  B2B registration block.
   Inlined so it runs even when the theme doesn't load app block assets.
 
   @example
@@ -22,8 +23,12 @@
       var country = form.elements.namedItem("countryCode");
       var region = form.elements.namedItem("provinceCode");
       var regionField = root.querySelector("[data-b2b-register-region]");
-      var citySelect = root.querySelector("[data-b2b-register-city-select]");
-      var cityText = root.querySelector("[data-b2b-register-city-text]");
+      var city = root.querySelector("[data-b2b-register-city]");
+      var suggestionBox = root.querySelector("[data-b2b-register-suggestions]");
+      var suggestionList = suggestionBox.querySelector('[role="listbox"]');
+      var zip = form.elements.namedItem("zip");
+      var phoneExt = form.elements.namedItem("phoneExt");
+      var startedAt = Date.now();
       var phoneCountry = root.querySelector("[data-b2b-register-phone-country]");
       var phonePrefix = root.querySelector("[data-b2b-register-phone-prefix]");
       var phone = form.elements.namedItem("phone");
@@ -131,33 +136,102 @@
         if (select.selectedIndex < 0) select.value = "";
       }
 
-      // Strict city list when the dataset has cities for the area; free text
-      // only where it has none, so those customers can still register.
-      function showCities(names, selected) {
-        var hasList = names.length > 0;
-        citySelect.hidden = !hasList;
-        cityText.hidden = hasList;
-        cityText.disabled = hasList;
-        citySelect.disabled = !hasList;
-        cityText.value = hasList ? "" : selected || "";
-        fillSelect(
-          citySelect,
-          names.map(function (name) {
-            return { value: name, label: name };
-          }),
-          messages.cityPlaceholder,
-          selected
-        );
+      // City is typed; the dataset's cities for the chosen state are only
+      // suggestions, since it misses many towns and suburbs.
+      var cityNames = [];
+      var activeSuggestion = -1;
+
+      function closeSuggestions() {
+        suggestionBox.hidden = true;
+        city.setAttribute("aria-expanded", "false");
+        city.removeAttribute("aria-activedescendant");
+        activeSuggestion = -1;
       }
 
-      // An empty (still required) city list until a state is picked.
-      function resetCities() {
-        showCities([], "");
-        citySelect.hidden = false;
-        citySelect.disabled = false;
-        cityText.hidden = true;
-        cityText.disabled = true;
+      // Names starting with what was typed come first, then ones containing it.
+      function showSuggestions() {
+        var query = city.value.trim().toLowerCase();
+        if (!query || !cityNames.length) return closeSuggestions();
+        var starts = [];
+        var contains = [];
+        cityNames.forEach(function (name) {
+          var position = name.toLowerCase().indexOf(query);
+          if (name.toLowerCase() === query) return;
+          if (position === 0) starts.push(name);
+          else if (position > 0) contains.push(name);
+        });
+        var matches = starts.concat(contains).slice(0, 8);
+        if (!matches.length) return closeSuggestions();
+
+        suggestionList.replaceChildren();
+        matches.forEach(function (name, index) {
+          var option = document.createElement("li");
+          option.id = city.id + "-option-" + index;
+          option.setAttribute("role", "option");
+          option.setAttribute("aria-selected", "false");
+          option.textContent = name;
+          // mousedown, not click: it runs before the input's blur closes the list.
+          option.addEventListener("mousedown", function (event) {
+            event.preventDefault();
+            chooseCity(name);
+          });
+          suggestionList.appendChild(option);
+        });
+        activeSuggestion = -1;
+        suggestionBox.hidden = false;
+        city.setAttribute("aria-expanded", "true");
       }
+
+      function chooseCity(name) {
+        city.value = name;
+        cityFilledByZip = false;
+        closeSuggestions();
+      }
+
+      function highlightSuggestion(index) {
+        var options = suggestionList.children;
+        if (!options.length) return;
+        activeSuggestion = (index + options.length) % options.length;
+        Array.prototype.forEach.call(options, function (option, i) {
+          option.setAttribute("aria-selected", String(i === activeSuggestion));
+        });
+        city.setAttribute("aria-activedescendant", options[activeSuggestion].id);
+        options[activeSuggestion].scrollIntoView({ block: "nearest" });
+      }
+
+      // True while the city holds what the ZIP lookup filled in, so a later
+      // ZIP can replace it but never something the customer typed.
+      var cityFilledByZip = false;
+
+      city.addEventListener("input", function () {
+        cityFilledByZip = false;
+        showSuggestions();
+      });
+      city.addEventListener("keydown", function (event) {
+        if (suggestionBox.hidden) {
+          if (event.key === "ArrowDown") showSuggestions();
+          return;
+        }
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          highlightSuggestion(activeSuggestion + 1);
+        } else if (event.key === "ArrowUp") {
+          event.preventDefault();
+          highlightSuggestion(activeSuggestion - 1);
+        } else if (event.key === "Enter" && activeSuggestion >= 0) {
+          event.preventDefault();
+          chooseCity(suggestionList.children[activeSuggestion].textContent);
+        } else if (event.key === "Escape") {
+          closeSuggestions();
+        }
+      });
+      city.addEventListener("blur", closeSuggestions);
+      root
+        .querySelector("[data-b2b-register-suggestions-close]")
+        .addEventListener("mousedown", function (event) {
+          event.preventDefault();
+          closeSuggestions();
+        });
 
       // Disabled fields are skipped by validation and left out of the
       // submission, so only a field that doesn't apply is disabled.
@@ -170,22 +244,22 @@
       // can't overwrite the lists for the current one.
       var loadToken = 0;
 
-      function loadCities(selectedCity) {
+      function loadCities() {
         var token = ++loadToken;
-        resetCities();
+        cityNames = [];
         if (!region.value) return Promise.resolve();
         return loadOptions({ country: country.value, region: region.value }).then(
           function (result) {
-            if (token === loadToken) showCities(result.cities, selectedCity);
+            if (token === loadToken) cityNames = result.cities;
           }
         );
       }
 
-      function loadRegions(selectedRegion, selectedCity) {
+      function loadRegions(selectedRegion) {
         var token = ++loadToken;
         fillSelect(region, [], messages.statePlaceholder, "");
         showRegions(true);
-        resetCities();
+        cityNames = [];
         if (!country.value) return Promise.resolve();
         return loadOptions({ country: country.value }).then(function (result) {
           if (token !== loadToken) return;
@@ -198,10 +272,48 @@
             messages.statePlaceholder,
             selectedRegion
           );
-          if (result.regions.length) return loadCities(selectedCity);
-          showCities(result.cities, selectedCity);
+          if (result.regions.length) return loadCities();
+          cityNames = result.cities;
         });
       }
+
+      // A complete US ZIP or Canadian postal code fills in the state and
+      // city (the city only if the customer hasn't typed one).
+      var postalToken = 0;
+      function fillFromPostalCode() {
+        if (!root.dataset.postalUrl) return;
+        if (country.value !== "US" && country.value !== "CA") return;
+        if (!zip.value.trim() || fieldError(zip)) return;
+        var token = ++postalToken;
+        var url =
+          root.dataset.postalUrl +
+          "?" +
+          new URLSearchParams({ country: country.value, zip: zip.value.trim() });
+        fetch(url, { headers: { Accept: "application/json" } })
+          .then(function (response) {
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            return response.json();
+          })
+          .then(function (result) {
+            if (token !== postalToken || !result.city) return;
+            var regionChanged =
+              result.provinceCode && region.value !== result.provinceCode;
+            if (regionChanged) {
+              region.value = result.provinceCode;
+              if (region.value !== result.provinceCode) return;
+              loadCities().catch(addressLoadFailed);
+            }
+            if (regionChanged || cityFilledByZip || !city.value.trim()) {
+              city.value = result.city;
+              cityFilledByZip = true;
+            }
+          })
+          .catch(function (error) {
+            // The customer can still type the city and pick the state.
+            console.error(error);
+          });
+      }
+      zip.addEventListener("change", fillFromPostalCode);
 
       function addressLoadFailed(error) {
         console.error(error);
@@ -213,7 +325,7 @@
       var phoneCountryChosen = false;
 
       country.addEventListener("change", function () {
-        loadRegions("", "").catch(addressLoadFailed);
+        loadRegions("").catch(addressLoadFailed);
         if (!phoneCountryChosen && country.value) {
           phoneCountry.value = country.value;
           showDialCode();
@@ -226,7 +338,13 @@
         verifyPhone();
       });
       region.addEventListener("change", function () {
-        loadCities("").catch(addressLoadFailed);
+        loadCities().catch(addressLoadFailed);
+      });
+
+      // Extensions are digits only.
+      phoneExt.addEventListener("input", function () {
+        var digits = phoneExt.value.replace(/\D/g, "");
+        if (digits !== phoneExt.value) phoneExt.value = digits;
       });
 
       // Preselect the signed-in customer's default address, or the
@@ -260,15 +378,16 @@
           // Drop the placeholder: there is always a dial code.
           phoneCountry.remove(0);
           showDialCode();
-          return loadRegions(root.dataset.province, root.dataset.city);
+          if (root.dataset.city) city.value = root.dataset.city;
+          return loadRegions(root.dataset.province);
         })
         .catch(addressLoadFailed);
 
       // The form is novalidate, so required fields get inline messages
       // instead of the browser's tooltips. Messages are only updated on
-      // submit, so they stay put while the customer fixes a field. A state or
-      // city field is disabled only while it doesn't apply, so disabled ones
-      // are skipped when validating rather than left out here.
+      // submit, so they stay put while the customer fixes a field. The state
+      // field is disabled only while it doesn't apply, so a disabled one is
+      // skipped when validating rather than left out here.
       var fields = Array.prototype.filter.call(form.elements, function (el) {
         return el.required;
       });
@@ -285,7 +404,6 @@
         var serverError = serverErrors[el.name];
         if (serverError && serverError.value === value) return serverError.message;
         if (!value) {
-          // The free-text city shares the city field's label.
           var label =
             form.querySelector('label[for="' + el.id + '"]') ||
             el.closest(".b2b-register__field").querySelector("label");
@@ -415,6 +533,7 @@
           companyName: value("companyName"),
           // The server turns this into E.164 using phoneCountryCode.
           phone: value("phone"),
+          phoneExt: value("phoneExt"),
           address1: value("address1"),
           address2: [value("address2"), value("address3")]
             .filter(Boolean)
@@ -424,8 +543,10 @@
           countryCode: value("countryCode"),
           phoneCountryCode: phoneCountry.value,
           zip: value("zip"),
-          remoteShoppingAssistance: data.has("remoteAssist"),
           locale: {{ request.locale.iso_code | json }},
+          // Bot checks: the hidden field stays empty and people take a while.
+          website: value("website"),
+          elapsedMs: Date.now() - startedAt,
         };
 
         button.disabled = true;
@@ -450,6 +571,13 @@
           }
 
           if (response.ok && result && result.ok) {
+            // Lets the theme hide its "Create account" link on later pages
+            // (see the hide-registration-link app embed).
+            try {
+              window.localStorage.setItem("b2bRegistered", "1");
+            } catch (error) {
+              // Storage blocked: the link just stays visible.
+            }
             form.hidden = true;
             success.querySelector("[data-b2b-register-company]").textContent =
               result.companyName || payload.companyName;

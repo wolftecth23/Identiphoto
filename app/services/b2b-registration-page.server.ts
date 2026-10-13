@@ -14,13 +14,13 @@ const EN = {
   businessAccountTitle: "Business account",
   status: "Status",
   active: "Active",
+  pending: "Pending approval",
   personalInformation: "Personal information",
   companyInformation: "Company information",
   addressInformation: "Address information",
   firstName: "First name",
   lastName: "Last name",
   email: "Email",
-  remoteAssist: "Allow remote shopping assistance",
   company: "Company",
   phone: "Phone number",
   phoneCountry: "Country code",
@@ -50,11 +50,13 @@ const EN = {
   zipInvalid: "Enter a valid ZIP code, like 12345 or 12345-6789.",
   postalCodeCaInvalid: "Enter a valid postal code, like K1A 0B1.",
   postalCodeInvalid: "Please enter a valid postal code.",
-  success: "Your account and company profile have been saved.",
+  success: "Thanks! Your registration has been received and is pending approval.",
   successJoinedCompany:
-    "Your account has been saved and added to the existing company %companyName%.",
+    "Thanks! Your request to join %companyName% has been received and is pending approval.",
+  pendingReview:
+    "We'll review your application and email you as soon as your business account is approved.",
   signInAfterRegister:
-    "Sign in with the email you registered to start ordering.",
+    "You can sign in with the email you registered. Business ordering opens once your account is approved.",
 };
 
 type Copy = typeof EN;
@@ -68,13 +70,13 @@ const FR: Copy = {
   businessAccountTitle: "Compte professionnel",
   status: "Statut",
   active: "Actif",
+  pending: "En attente d'approbation",
   personalInformation: "Informations personnelles",
   companyInformation: "Informations sur l'entreprise",
   addressInformation: "Informations d'adresse",
   firstName: "Prénom",
   lastName: "Nom",
   email: "Courriel",
-  remoteAssist: "Autoriser l'assistance à distance pour les achats",
   company: "Entreprise",
   phone: "Numéro de téléphone",
   phoneCountry: "Indicatif du pays",
@@ -105,11 +107,13 @@ const FR: Copy = {
   zipInvalid: "Entrez un code ZIP valide, par exemple 12345 ou 12345-6789.",
   postalCodeCaInvalid: "Entrez un code postal valide, par exemple K1A 0B1.",
   postalCodeInvalid: "Veuillez entrer un code postal valide.",
-  success: "Votre compte et votre profil entreprise ont été enregistrés.",
+  success: "Merci ! Votre inscription a bien été reçue et est en attente d'approbation.",
   successJoinedCompany:
-    "Votre compte a été enregistré et ajouté à l'entreprise existante %companyName%.",
+    "Merci ! Votre demande pour rejoindre %companyName% a bien été reçue et est en attente d'approbation.",
+  pendingReview:
+    "Nous examinerons votre demande et vous écrirons dès que votre compte professionnel sera approuvé.",
   signInAfterRegister:
-    "Connectez-vous avec l'adresse courriel utilisée pour commencer à commander.",
+    "Vous pouvez vous connecter avec l'adresse courriel utilisée. Les commandes professionnelles seront disponibles une fois votre compte approuvé.",
 };
 
 /**
@@ -163,13 +167,18 @@ function textField(
     </div>`;
 }
 
-function businessAccount(copy: Copy, companyName: string): string {
+function businessAccount(
+  copy: Copy,
+  companyName: string,
+  pending: boolean,
+): string {
   return `
     <h2 class="b2b-register__heading">${escapeHtml(copy.businessAccountTitle)}</h2>
     <dl class="b2b-register__card b2b-register__summary">
       <div><dt>${escapeHtml(copy.company)}</dt><dd data-b2b-register-company>${escapeHtml(companyName)}</dd></div>
-      <div><dt>${escapeHtml(copy.status)}</dt><dd><span class="b2b-register__badge">${escapeHtml(copy.active)}</span></dd></div>
-    </dl>`;
+      <div><dt>${escapeHtml(copy.status)}</dt><dd><span class="b2b-register__badge">${escapeHtml(pending ? copy.pending : copy.active)}</span></dd></div>
+    </dl>${pending ? `
+    <p>${escapeHtml(copy.pendingReview)}</p>` : ""}`;
 }
 
 function registrationForm(copy: Copy, { signedIn, customer }: PageOptions) {
@@ -204,10 +213,6 @@ function registrationForm(copy: Copy, { signedIn, customer }: PageOptions) {
             ? ""
             : textField(copy, { name: "email", label: "email", type: "email", autocomplete: "email", required: true, maxLength: 254 })
         }
-        <label class="b2b-register__checkbox">
-          <input type="checkbox" name="remoteAssist">
-          ${escapeHtml(copy.remoteAssist)}
-        </label>
       </fieldset>
 
       <fieldset>
@@ -289,7 +294,7 @@ function localizedPage(copy: Copy, options: PageOptions): string {
     return `
       <div class="b2b-register">
         <h1>${escapeHtml(copy.pageTitle)}</h1>
-        ${businessAccount(copy, companyName)}
+        ${businessAccount(copy, companyName, Boolean(options.customer?.registrationPending))}
       </div>`;
   }
 
@@ -309,7 +314,7 @@ function localizedPage(copy: Copy, options: PageOptions): string {
       <div class="b2b-register__banner" role="alert" data-b2b-register-banner hidden></div>
       ${registrationForm(copy, options)}
       <div data-b2b-register-success hidden>
-        ${businessAccount(copy, "")}
+        ${businessAccount(copy, "", true)}
         ${
           options.signedIn
             ? ""
@@ -336,7 +341,6 @@ const STYLES = `
   .b2b-register__field input, .b2b-register__field select { width: 100%; box-sizing: border-box; min-height: 4.4rem; padding: 0.8rem 1.2rem; font: inherit; color: inherit; background: transparent; border: 1px solid color-mix(in srgb, currentColor 40%, transparent); border-radius: 0.5rem; }
   .b2b-register__field select option { color: initial; }
   .b2b-register__field select:disabled { opacity: 0.6; }
-  .b2b-register__checkbox { display: flex; gap: 0.75rem; align-items: center; }
   .b2b-register button[type="submit"] { justify-self: start; }
   .b2b-register button[aria-busy="true"] { opacity: 0.6; cursor: progress; }
   .b2b-register__banner { border-radius: 0.5rem; padding: 1.2rem 1.5rem; margin: 1.5rem 0; }
@@ -592,14 +596,13 @@ const SCRIPT = `
 
       var data = new FormData(form);
       var value = function (name) { return String(data.get(name) || "").trim(); };
-      var phone = value("phone");
-      var phoneExt = value("phoneExt");
       var payload = {
         firstName: value("firstName"),
         lastName: value("lastName"),
         email: value("email"),
         companyName: value("companyName"),
-        phone: phoneExt ? phone + " ext. " + phoneExt : phone,
+        phone: value("phone"),
+        phoneExt: value("phoneExt"),
         address1: value("address1"),
         address2: [value("address2"), value("address3")].filter(Boolean).join(", "),
         city: value("city"),
@@ -607,7 +610,6 @@ const SCRIPT = `
         countryCode: value("countryCode"),
         phoneCountryCode: value("phoneCountry"),
         zip: value("zip"),
-        remoteShoppingAssistance: data.has("remoteAssist"),
         locale: {{ request.locale.iso_code | json }},
       };
 

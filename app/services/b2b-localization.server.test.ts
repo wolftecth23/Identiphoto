@@ -8,9 +8,12 @@ import {
   listRegions,
   shopifyZoneCode,
 } from "./b2b-localization.server";
-import { checkPhone, dialCode } from "./b2b-phone.server";
+import { checkPhone, dialCode, normalizePhoneExt } from "./b2b-phone.server";
+import { lookupPostalCode } from "./b2b-postal.server";
 import {
   formatPhone,
+  phoneExtensionNote,
+  prepareRegistrationPayload,
   postalCodeError,
   registrationFieldError,
   resolveZoneCode,
@@ -42,47 +45,90 @@ describe("address options", () => {
 });
 
 describe("addressAreaError", () => {
-  test("accepts a country, state and city from the lists", () => {
-    assert.equal(
-      addressAreaError({
-        countryCode: "US",
-        provinceCode: "CA",
-        city: "Los Angeles",
-      }),
-      null,
-    );
+  test("accepts a country and state from the lists", () => {
+    assert.equal(addressAreaError({ countryCode: "US", provinceCode: "CA" }), null);
   });
 
-  test("rejects values that aren't in the lists", () => {
+  test("rejects a country or state that isn't in the lists", () => {
     assert.equal(
-      addressAreaError({ countryCode: "ZZ", city: "Anywhere" }),
+      addressAreaError({ countryCode: "ZZ" }),
       "Select a valid country.",
     );
     assert.equal(
-      addressAreaError({ countryCode: "US", city: "Los Angeles" }),
+      addressAreaError({ countryCode: "US" }),
       "Select a valid state/province.",
-    );
-    assert.equal(
-      addressAreaError({
-        countryCode: "US",
-        provinceCode: "CA",
-        city: "Chicago",
-      }),
-      "Select a city from the list.",
     );
   });
 
-  test("allows any city where the dataset has none", () => {
-    const [region] = listRegions("HK");
-    assert.deepEqual(listCities("HK", region.code), []);
-    assert.equal(
-      addressAreaError({
-        countryCode: "HK",
-        provinceCode: region.code,
-        city: "Kowloon",
-      }),
-      null,
+  test("allows a country without regions", () => {
+    const withoutRegions = listCountries().find(
+      (country) => listRegions(country.code).length === 0,
+    )!;
+    assert.equal(addressAreaError({ countryCode: withoutRegions.code }), null);
+  });
+});
+
+describe("typed city", () => {
+  const registration: B2bRegistrationPayload = {
+    firstName: "Tom",
+    lastName: "Tester",
+    email: "tom@identiphoto.test",
+    companyName: "Identiphoto LLC",
+    address1: "1810 Joseph Lloyd Pkwy",
+    city: "Willoughby",
+    provinceCode: "OH",
+    countryCode: "US",
+    zip: "44094",
+  };
+
+  test("a city missing from the suggestions is accepted", () => {
+    // Jeromesville, OH has its own ZIP but isn't in the dataset's city list,
+    // which the old dropdown limited customers to.
+    assert.ok(!listCities("US", "OH").includes("Jeromesville"));
+    const prepared = prepareRegistrationPayload({
+      ...registration,
+      city: "Jeromesville",
+    });
+    assert.ok(prepared.ok);
+  });
+
+  test("a city in another state than the one picked is accepted too", () => {
+    assert.ok(
+      prepareRegistrationPayload({ ...registration, provinceCode: "CA" }).ok,
     );
+  });
+});
+
+describe("ZIP and postal code lookup", () => {
+  test("a US ZIP gives its city and state", async () => {
+    assert.deepEqual(await lookupPostalCode("US", "44094"), {
+      city: "Willoughby",
+      provinceCode: "OH",
+    });
+    assert.deepEqual(await lookupPostalCode("us", "10001-1234"), {
+      city: "New York",
+      provinceCode: "NY",
+    });
+  });
+
+  test("a Canadian postal code gives its city and province", async () => {
+    assert.deepEqual(await lookupPostalCode("CA", "m5v 2t6"), {
+      city: "Toronto",
+      provinceCode: "ON",
+    });
+    // A rural code whose town differs from the area's main one.
+    assert.deepEqual(await lookupPostalCode("CA", "T0A 0A1"), {
+      city: "Saddle Lake",
+      provinceCode: "AB",
+    });
+    // Only the first three characters typed so far.
+    assert.equal((await lookupPostalCode("CA", "H2X"))?.provinceCode, "QC");
+  });
+
+  test("unknown codes and other countries give nothing", async () => {
+    assert.equal(await lookupPostalCode("US", "00000"), null);
+    assert.equal(await lookupPostalCode("US", "4409"), null);
+    assert.equal(await lookupPostalCode("GB", "SW1A 1AA"), null);
   });
 });
 
@@ -107,7 +153,8 @@ describe("phone numbers", () => {
     assert.deepEqual(checkPhone("90 123 45 67", "UZ"), {
       valid: true,
       countryCode: "UZ",
-      formatted: "+998901234567",
+      e164: "+998901234567",
+      ext: "",
       national: "90 123 45 67",
     });
     assert.equal(checkPhone("12345", "UZ").valid, false);
@@ -129,12 +176,65 @@ describe("phone numbers", () => {
     assert.equal(formatPhone("(212) 555-0123", "US"), "+12125550123");
     // The national trunk 0 is dropped after the country code.
     assert.equal(formatPhone("020 7946 0958", "GB"), "+442079460958");
-    assert.equal(
-      formatPhone("212 555 0123 ext. 12", "US"),
-      "+12125550123 ext. 12",
-    );
+    // Shopify rejects "+1… ext. 12" ("Phone is invalid"), so the extension
+    // is left out of the phone and kept separately.
+    assert.equal(formatPhone("212 555 0123 ext. 12", "US"), "+12125550123");
     // Numbers that don't validate are passed through as typed.
     assert.equal(formatPhone("12345", "US"), "12345");
+  });
+
+  test("an extension typed after the number is split off", () => {
+    for (const typed of ["(440) 555-0100 ext. 214", "440-555-0100 x214", "4405550100 ext 214"]) {
+      const check = checkPhone(typed, "US");
+      assert.ok(check.valid, typed);
+      assert.equal(check.e164, "+14405550100");
+      assert.equal(check.ext, "214");
+    }
+  });
+
+  test("the extension field accepts digits only", () => {
+    assert.equal(normalizePhoneExt(" 214 "), "214");
+    assert.equal(normalizePhoneExt("ext. 214"), "214");
+    assert.equal(normalizePhoneExt("x9"), "9");
+    assert.equal(normalizePhoneExt("12a"), "");
+    assert.equal(normalizePhoneExt("12345678901"), "");
+    assert.equal(normalizePhoneExt(undefined), "");
+  });
+
+  test("the submitted phone is E.164 with the extension in phoneExt", () => {
+    const base: B2bRegistrationPayload = {
+      companyName: "Identiphoto LLC",
+      address1: "1 Main St",
+      city: "Willoughby",
+      provinceCode: "OH",
+      countryCode: "US",
+      zip: "44094",
+    };
+    const typedTogether = prepareRegistrationPayload({
+      ...base,
+      phone: "(440) 555-0100 ext. 214",
+    });
+    assert.ok(typedTogether.ok);
+    assert.equal(typedTogether.payload.phone, "+14405550100");
+    assert.equal(typedTogether.payload.phoneExt, "214");
+
+    const separateField = prepareRegistrationPayload({
+      ...base,
+      phone: "(440) 555-0100",
+      phoneExt: "12",
+    });
+    assert.ok(separateField.ok);
+    assert.equal(separateField.payload.phone, "+14405550100");
+    assert.equal(separateField.payload.phoneExt, "12");
+    assert.equal(
+      phoneExtensionNote(separateField.payload),
+      "Phone: +14405550100 ext. 12",
+    );
+    assert.equal(phoneExtensionNote({ ...base, phone: "(440) 555-0100" }), "");
+
+    const invalid = prepareRegistrationPayload({ ...base, phone: "12345" });
+    assert.ok(!invalid.ok);
+    assert.equal(invalid.body.field, "phone");
   });
 
   test("dial codes come from the phone numbering data", () => {

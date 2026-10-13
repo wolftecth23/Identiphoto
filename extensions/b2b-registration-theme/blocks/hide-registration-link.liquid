@@ -1,17 +1,35 @@
-{%- if customer -%}
-  {%- liquid
-    assign page_path = block.settings.page_path | strip | remove: '"' | remove: '\'
-    if page_path != blank
-      assign first_char = page_path | slice: 0
-      if first_char != '/'
-        assign page_path = '/' | append: page_path
-      endif
+{%- liquid
+  assign page_path = block.settings.page_path | strip | remove: '"' | remove: '\'
+  if page_path != blank
+    assign first_char = page_path | slice: 0
+    if first_char != '/'
+      assign page_path = '/' | append: page_path
     endif
-  -%}
-  {%- if page_path != blank -%}
+  endif
+-%}
+{%- if page_path != blank -%}
+  {%- if customer -%}
     <style>
       a[href$="{{ page_path }}"],
       li:has(> a[href$="{{ page_path }}"]) {
+        display: none !important;
+      }
+    </style>
+  {%- else -%}
+    {%- comment -%}
+      Guests who registered in this browser (the registration form sets
+      "b2bRegistered") don't see the link either; they're asked to sign in.
+    {%- endcomment -%}
+    <script>
+      try {
+        if (window.localStorage.getItem("b2bRegistered")) {
+          document.documentElement.classList.add("b2b-registered");
+        }
+      } catch (error) {}
+    </script>
+    <style>
+      html.b2b-registered a[href$="{{ page_path }}"],
+      html.b2b-registered li:has(> a[href$="{{ page_path }}"]) {
         display: none !important;
       }
     </style>

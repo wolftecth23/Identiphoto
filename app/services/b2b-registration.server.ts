@@ -1,6 +1,6 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
-import { shopifyZoneCode } from "./b2b-localization.server";
-import { checkPhone } from "./b2b-phone.server";
+import { addressAreaError, shopifyZoneCode } from "./b2b-localization.server";
+import { checkPhone, normalizePhoneExt } from "./b2b-phone.server";
 import {
   sendRegistrationEmail,
   smtpMailerFromEnv,
@@ -15,6 +15,8 @@ export type B2bRegistrationPayload = {
   phone?: string;
   /** Country whose dial code the phone uses; defaults to the address country. */
   phoneCountryCode?: string;
+  /** Phone extension, digits only. Shopify phone fields can't hold one. */
+  phoneExt?: string;
   address1: string;
   address2?: string;
   city: string;
@@ -43,6 +45,11 @@ export type B2bRegistrationResult =
       /** True when a new company was created; false when an existing one was matched. */
       created: boolean;
       linked: boolean;
+      /**
+       * "pending" until a staff member approves the registration in the app;
+       * only then does the contact get a role that lets them order.
+       */
+      status: RegistrationStatus;
       customerCreated?: boolean;
       alreadyLinked?: boolean;
       /** True when the registration confirmation email was handed to SMTP. */
@@ -53,6 +60,19 @@ export type B2bRegistrationResult =
       error: string;
       userErrors?: { field?: string[]; message: string }[];
     };
+
+export type RegistrationStatus = "pending" | "approved";
+
+/**
+ * Customer tags that track a registration. Tags show in the Shopify admin,
+ * can be searched, and are readable in Liquid (`customer.tags`), so the
+ * storefront form can tell a signed-in customer their request is pending.
+ */
+export const REGISTRATION_TAGS = {
+  pending: "b2b-registration-pending",
+  approved: "b2b-registration-approved",
+  rejected: "b2b-registration-rejected",
+} as const;
 
 export function isProtectedCustomerDataError(message: string): boolean {
   return (
@@ -485,7 +505,8 @@ function escapeSearchTerm(term: string): string {
 
 /**
  * Phone in E.164 for Shopify, using the country's dial code for national
- * numbers. Numbers that don't validate are passed through as typed.
+ * numbers. Any extension is dropped: Shopify rejects "+1… ext. 12" as an
+ * invalid phone. Numbers that don't validate are passed through as typed.
  */
 export function formatPhone(
   phone: string | undefined,
@@ -494,7 +515,20 @@ export function formatPhone(
   const trimmed = phone?.trim();
   if (!trimmed) return undefined;
   const check = checkPhone(trimmed, countryCode);
-  return check.valid ? check.formatted : trimmed;
+  return check.valid ? check.e164 : trimmed;
+}
+
+/**
+ * "Phone: +1 212-555-0123 ext. 12" for the company and customer notes, the
+ * only place in Shopify an extension can be kept. Empty without an extension.
+ */
+export function phoneExtensionNote(payload: B2bRegistrationPayload): string {
+  const ext = normalizePhoneExt(payload.phoneExt);
+  const phone = formatPhone(
+    payload.phone,
+    payload.phoneCountryCode || payload.countryCode,
+  );
+  return ext && phone ? `Phone: ${phone} ext. ${ext}` : "";
 }
 
 function customerGid(customerId: string): string {
@@ -644,7 +678,7 @@ type GraphqlEnvelope = {
   errors?: { message: string }[];
 };
 
-async function graphql<T>(
+export async function graphql<T>(
   admin: AdminApiContext,
   query: string,
   variables?: Record<string, unknown>,
@@ -680,7 +714,7 @@ export class ProtectedCustomerDataAccessError extends Error {
   }
 }
 
-function pickContactRoleId(company: {
+export function pickContactRoleId(company: {
   defaultRole?: { id: string } | null;
   contactRoles?: { nodes: { id: string; name: string }[] };
 }): string | undefined {
@@ -691,6 +725,262 @@ function pickContactRoleId(company: {
   const roles = company.contactRoles?.nodes ?? [];
   const preferred = roles.find((role) => /order|buy|purch/i.test(role.name));
   return preferred?.id ?? roles[0]?.id;
+}
+
+type UserError = { field?: string[] | null; message: string };
+
+/** Adds or removes customer tags. Returns the user errors, if any. */
+export async function updateCustomerTags(
+  admin: AdminApiContext,
+  customerId: string,
+  change: { add?: string[]; remove?: string[] },
+): Promise<UserError[]> {
+  type TagsResult = {
+    data?: {
+      tagsAdd?: { userErrors: UserError[] };
+      tagsRemove?: { userErrors: UserError[] };
+    };
+  };
+
+  const errors: UserError[] = [];
+  if (change.remove?.length) {
+    const result = await graphql<TagsResult>(
+      admin,
+      `
+        #graphql
+        mutation B2bRegistrationUntagCustomer($id: ID!, $tags: [String!]!) {
+          tagsRemove(id: $id, tags: $tags) {
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+      `,
+      { id: customerId, tags: change.remove },
+    );
+    errors.push(...(result.data?.tagsRemove?.userErrors ?? []));
+  }
+  if (change.add?.length) {
+    const result = await graphql<TagsResult>(
+      admin,
+      `
+        #graphql
+        mutation B2bRegistrationTagCustomer($id: ID!, $tags: [String!]!) {
+          tagsAdd(id: $id, tags: $tags) {
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+      `,
+      { id: customerId, tags: change.add },
+    );
+    errors.push(...(result.data?.tagsAdd?.userErrors ?? []));
+  }
+  return errors;
+}
+
+/**
+ * Company metafields the merchant defined in the admin (Settings → Custom
+ * data → Companies), found by their names so their namespace/key don't need
+ * configuring. Missing definitions are simply not written.
+ */
+export const COMPANY_FIELD_NAMES = {
+  status: "B2B account status",
+  approvedBy: "Approved by",
+  approvedOn: "Approved on",
+} as const;
+
+type CompanyFieldDefinition = {
+  namespace: string;
+  key: string;
+  type: string;
+  choices: string[];
+};
+
+export type CompanyFieldDefinitions = Partial<
+  Record<keyof typeof COMPANY_FIELD_NAMES, CompanyFieldDefinition>
+>;
+
+export async function companyFieldDefinitions(
+  admin: AdminApiContext,
+): Promise<CompanyFieldDefinitions> {
+  type DefinitionsQuery = {
+    data?: {
+      metafieldDefinitions?: {
+        nodes: {
+          name: string;
+          namespace: string;
+          key: string;
+          type: { name: string };
+          validations: { name: string; value?: string | null }[];
+        }[];
+      };
+    };
+  };
+
+  const data = await graphql<DefinitionsQuery>(
+    admin,
+    `
+      #graphql
+      query B2bRegistrationCompanyFieldDefinitions {
+        metafieldDefinitions(ownerType: COMPANY, first: 100) {
+          nodes {
+            name
+            namespace
+            key
+            type {
+              name
+            }
+            validations {
+              name
+              value
+            }
+          }
+        }
+      }
+    `,
+  );
+
+  const nodes = data.data?.metafieldDefinitions?.nodes ?? [];
+  const definitions: CompanyFieldDefinitions = {};
+  for (const [field, name] of Object.entries(COMPANY_FIELD_NAMES) as [
+    keyof typeof COMPANY_FIELD_NAMES,
+    string,
+  ][]) {
+    const node = nodes.find(
+      (entry) => entry.name.trim().toLowerCase() === name.toLowerCase(),
+    );
+    if (!node) continue;
+    let choices: string[] = [];
+    const choicesRule = node.validations.find((rule) => rule.name === "choices");
+    try {
+      const parsed = JSON.parse(choicesRule?.value ?? "[]");
+      if (Array.isArray(parsed)) choices = parsed.map(String);
+    } catch {
+      choices = [];
+    }
+    definitions[field] = {
+      namespace: node.namespace,
+      key: node.key,
+      type: node.type.name,
+      choices,
+    };
+  }
+  return definitions;
+}
+
+const STATUS_LABELS: Record<RegistrationStatus | "rejected", string> = {
+  pending: "Pending",
+  approved: "Approved",
+  rejected: "Rejected",
+};
+
+/**
+ * The value to store for a status: the definition's own choice when it
+ * limits the values (e.g. "Pending approval"), else "Pending"/"Approved"/….
+ */
+export function companyStatusValue(
+  definition: CompanyFieldDefinition,
+  status: RegistrationStatus | "rejected",
+): string {
+  const stems = {
+    pending: /pend|await|review/i,
+    approved: /approv|activ/i,
+    rejected: /reject|declin|denied/i,
+  };
+  const matches = definition.choices.filter((choice) => stems[status].test(choice));
+  // "Pending approval" mentions approval but is the pending choice.
+  const others = (Object.keys(stems) as (keyof typeof stems)[]).filter(
+    (other) => other !== status,
+  );
+  return (
+    matches.find((choice) => !others.some((other) => stems[other].test(choice))) ??
+    matches[0] ??
+    STATUS_LABELS[status]
+  );
+}
+
+/**
+ * Writes the company's "B2B account status" (and, on approval, "Approved by"
+ * and "Approved on") metafields. Best effort: the registration itself is
+ * tracked with customer tags, so a missing or differently typed definition
+ * only means the admin field stays empty.
+ */
+export async function setCompanyStatusFields(
+  admin: AdminApiContext,
+  companyId: string,
+  status: RegistrationStatus | "rejected",
+  approval?: { by: string; on: Date },
+): Promise<void> {
+  try {
+    const definitions = await companyFieldDefinitions(admin);
+    const metafields: {
+      ownerId: string;
+      namespace: string;
+      key: string;
+      type: string;
+      value: string;
+    }[] = [];
+    const add = (definition: CompanyFieldDefinition | undefined, value: string) => {
+      if (definition && value) {
+        metafields.push({
+          ownerId: companyId,
+          namespace: definition.namespace,
+          key: definition.key,
+          type: definition.type,
+          value,
+        });
+      }
+    };
+
+    if (definitions.status?.type.endsWith("text_field")) {
+      add(definitions.status, companyStatusValue(definitions.status, status));
+    }
+    if (approval) {
+      if (definitions.approvedBy?.type.endsWith("text_field")) {
+        add(definitions.approvedBy, approval.by.trim());
+      }
+      const approvedOn = definitions.approvedOn;
+      if (approvedOn) {
+        const iso = approval.on.toISOString();
+        add(
+          approvedOn,
+          approvedOn.type === "date_time" ? iso : iso.slice(0, 10),
+        );
+      }
+    }
+    if (!metafields.length) return;
+
+    type SetResult = {
+      data?: { metafieldsSet?: { userErrors: UserError[] } };
+    };
+    const result = await graphql<SetResult>(
+      admin,
+      `
+        #graphql
+        mutation B2bRegistrationSetCompanyFields(
+          $metafields: [MetafieldsSetInput!]!
+        ) {
+          metafieldsSet(metafields: $metafields) {
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+      `,
+      { metafields },
+    );
+    const errors = result.data?.metafieldsSet?.userErrors ?? [];
+    if (errors.length) {
+      console.warn("B2B company status fields not saved", errors);
+    }
+  } catch (error) {
+    console.warn("B2B company status fields not saved", error);
+  }
 }
 
 type CompanySummary = { id: string; name: string; createdAt: string };
@@ -1096,6 +1386,7 @@ export async function linkCustomerToB2bCompany(
         firstName?: string | null;
         lastName?: string | null;
         email?: string | null;
+        tags: string[];
         companyContactProfiles: { company: { id: string } }[];
       } | null;
     };
@@ -1111,6 +1402,7 @@ export async function linkCustomerToB2bCompany(
           firstName
           lastName
           email
+          tags
           companyContactProfiles {
             company {
               id
@@ -1140,6 +1432,59 @@ export async function linkCustomerToB2bCompany(
   // customer in that company regardless of the name typed. Personal mailboxes
   // (gmail.com, ...) say nothing about the employer, so they only match by name.
   const emailDomain = businessEmailDomain(customer.email ?? payload.email);
+  const extensionNote = phoneExtensionNote(payload);
+
+  type AssignContactResult = {
+    data?: {
+      companyAssignCustomerAsContact?: {
+        companyContact?: { id: string } | null;
+        userErrors: { field?: string[]; message: string }[];
+      };
+    };
+  };
+
+  // The customer becomes a contact without a role at any location, so they
+  // can't order as the company until a staff member approves them in the app
+  // (which assigns the role).
+  const assignContact = async (
+    companyId: string,
+  ): Promise<{ ok: true } | Extract<B2bRegistrationResult, { ok: false }>> => {
+    const assignResult = await graphql<AssignContactResult>(
+      admin,
+      `
+        #graphql
+        mutation B2bRegistrationAssignContact($companyId: ID!, $customerId: ID!) {
+          companyAssignCustomerAsContact(
+            companyId: $companyId
+            customerId: $customerId
+          ) {
+            companyContact {
+              id
+            }
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+      `,
+      { companyId, customerId: gid },
+    );
+
+    const assignErrors =
+      assignResult.data?.companyAssignCustomerAsContact?.userErrors ?? [];
+    if (
+      assignErrors.length > 0 ||
+      !assignResult.data?.companyAssignCustomerAsContact?.companyContact
+    ) {
+      return {
+        ok: false,
+        error: "Could not link customer to company.",
+        userErrors: assignErrors,
+      };
+    }
+    return { ok: true };
+  };
 
   const resolution = await withCompanyLock(
     async (): Promise<
@@ -1176,7 +1521,10 @@ export async function linkCustomerToB2bCompany(
         `,
         {
           input: {
-            company: { name: companyName },
+            company: {
+              name: companyName,
+              ...(extensionNote ? { note: extensionNote } : {}),
+            },
             companyLocation: {
               name: locationName,
               shippingAddress: buildCompanyLocationAddress(
@@ -1200,6 +1548,11 @@ export async function linkCustomerToB2bCompany(
         };
       }
 
+      // Inside the lock: a colleague registering at the same moment finds
+      // this company through its contact's email domain.
+      const assigned = await assignContact(createdCompany.id);
+      if (!assigned.ok) return assigned;
+
       return { ok: true, company: createdCompany, created: true };
     },
   );
@@ -1211,6 +1564,10 @@ export async function linkCustomerToB2bCompany(
   const companyId = resolution.company.id;
   const resolvedCompanyName = resolution.company.name;
   const created = resolution.created;
+
+  if (created) {
+    await setCompanyStatusFields(admin, companyId, "pending");
+  }
 
   type CustomerUpdateResult = {
     data?: {
@@ -1275,127 +1632,23 @@ export async function linkCustomerToB2bCompany(
       created: false,
       linked: true,
       alreadyLinked: true,
+      status: customer.tags.includes(REGISTRATION_TAGS.pending)
+        ? "pending"
+        : "approved",
     };
   }
 
-  type AssignContactResult = {
-    data?: {
-      companyAssignCustomerAsContact?: {
-        companyContact?: { id: string };
-        userErrors: { field?: string[]; message: string }[];
-      };
-    };
-  };
-
-  const assignResult = await graphql<AssignContactResult>(
-    admin,
-    `
-      #graphql
-      mutation B2bRegistrationAssignContact($companyId: ID!, $customerId: ID!) {
-        companyAssignCustomerAsContact(
-          companyId: $companyId
-          customerId: $customerId
-        ) {
-          companyContact {
-            id
-          }
-          userErrors {
-            field
-            message
-          }
-        }
-      }
-    `,
-    { companyId, customerId: gid },
-  );
-
-  const assignErrors =
-    assignResult.data?.companyAssignCustomerAsContact?.userErrors ?? [];
-  const companyContact =
-    assignResult.data?.companyAssignCustomerAsContact?.companyContact;
-
-  if (assignErrors.length > 0 && !companyContact) {
-    return {
-      ok: false,
-      error: "Could not link customer to company.",
-      userErrors: assignErrors,
-    };
+  if (!created) {
+    const assigned = await assignContact(companyId);
+    if (!assigned.ok) return assigned;
   }
 
-  if (companyContact) {
-    type CompanyRoleQuery = {
-      data?: {
-        company?: {
-          defaultRole?: { id: string } | null;
-          contactRoles?: { nodes: { id: string; name: string }[] };
-          locations?: { nodes: { id: string }[] };
-        } | null;
-      };
-    };
-
-    const roleData = await graphql<CompanyRoleQuery>(
-      admin,
-      `
-        #graphql
-        query B2bRegistrationCompanyRole($id: ID!) {
-          company(id: $id) {
-            defaultRole {
-              id
-            }
-            contactRoles(first: 10) {
-              nodes {
-                id
-                name
-              }
-            }
-            locations(first: 1) {
-              nodes {
-                id
-              }
-            }
-          }
-        }
-      `,
-      { id: companyId },
-    );
-
-    const company = roleData.data?.company;
-    const roleId = company ? pickContactRoleId(company) : undefined;
-    const locationId = company?.locations?.nodes?.[0]?.id;
-
-    if (roleId && locationId) {
-      try {
-        await graphql(
-          admin,
-          `
-            #graphql
-            mutation B2bRegistrationAssignRole(
-              $companyContactId: ID!
-              $companyContactRoleId: ID!
-              $companyLocationId: ID!
-            ) {
-              companyContactAssignRole(
-                companyContactId: $companyContactId
-                companyContactRoleId: $companyContactRoleId
-                companyLocationId: $companyLocationId
-              ) {
-                userErrors {
-                  field
-                  message
-                }
-              }
-            }
-          `,
-          {
-            companyContactId: companyContact.id,
-            companyContactRoleId: roleId,
-            companyLocationId: locationId,
-          },
-        );
-      } catch (roleError) {
-        console.warn("B2B role assignment skipped", roleError);
-      }
-    }
+  const tagErrors = await updateCustomerTags(admin, gid, {
+    add: [REGISTRATION_TAGS.pending],
+    remove: [REGISTRATION_TAGS.rejected],
+  });
+  if (tagErrors.length) {
+    console.warn("B2B registration pending tag not saved", tagErrors);
   }
 
   const emailSent = await sendRegistrationConfirmation(
@@ -1418,7 +1671,8 @@ export async function linkCustomerToB2bCompany(
     companyId,
     companyName: resolvedCompanyName,
     created,
-    linked: !created,
+    linked: true,
+    status: "pending",
     emailSent,
   };
 }
@@ -1496,6 +1750,7 @@ async function createStorefrontCustomer(
   };
 
   const companyName = payload.companyName.trim();
+  const extensionNote = phoneExtensionNote(payload);
   const createResult = await graphql<CustomerCreateResult>(
     admin,
     `
@@ -1517,7 +1772,13 @@ async function createStorefrontCustomer(
         firstName,
         lastName,
         email,
-        phone: formatPhone(payload.phone, payload.phoneCountryCode || payload.countryCode),
+        // The form asks for the company's phone, so it goes on the address
+        // only. A customer's own phone must be unique in Shopify, and a
+        // colleague who registered first may already have this number.
+        ...(extensionNote ? { note: extensionNote } : {}),
+        // The storefront language, so the approval email (and Shopify's own
+        // customer emails) use it too.
+        ...(payload.locale ? { locale: payload.locale } : {}),
         addresses: [
           {
             ...buildCustomerMailingAddress(payload, firstName, lastName),
@@ -1553,6 +1814,8 @@ export type RegistrationCustomer = {
   city: string;
   /** Name of the first company the customer is a contact of, if any. */
   companyName: string | null;
+  /** True while staff haven't approved the customer's registration yet. */
+  registrationPending: boolean;
 };
 
 /** Loads what the storefront registration page needs about a signed-in customer. */
@@ -1566,6 +1829,7 @@ export async function getRegistrationCustomer(
         firstName?: string | null;
         lastName?: string | null;
         email?: string | null;
+        tags: string[];
         defaultAddress?: {
           countryCodeV2?: string | null;
           provinceCode?: string | null;
@@ -1585,6 +1849,7 @@ export async function getRegistrationCustomer(
           firstName
           lastName
           email
+          tags
           defaultAddress {
             countryCodeV2
             provinceCode
@@ -1612,6 +1877,7 @@ export async function getRegistrationCustomer(
     provinceCode: customer.defaultAddress?.provinceCode ?? "",
     city: customer.defaultAddress?.city ?? "",
     companyName: customer.companyContactProfiles[0]?.company.name ?? null,
+    registrationPending: customer.tags.includes(REGISTRATION_TAGS.pending),
   };
 }
 
@@ -1674,6 +1940,7 @@ export function parseB2bRegistrationPayload(
     companyName,
     phone: str("phone") || undefined,
     phoneCountryCode: str("phoneCountryCode") || undefined,
+    phoneExt: normalizePhoneExt(str("phoneExt")) || undefined,
     address1,
     address2: str("address2") || undefined,
     city,
@@ -1681,5 +1948,49 @@ export function parseB2bRegistrationPayload(
     countryCode,
     zip,
     locale: str("locale") || undefined,
+  };
+}
+
+/**
+ * Validates a parsed registration the way the storefront form does and puts
+ * the phone in E.164, with any extension moved to `phoneExt`. Returns the
+ * response to send when something is wrong.
+ */
+export function prepareRegistrationPayload(
+  payload: B2bRegistrationPayload,
+):
+  | { ok: true; payload: B2bRegistrationPayload }
+  | { ok: false; status: number; body: { ok: false; field?: string; error: string } } {
+  const fieldError = registrationFieldError(payload);
+  if (fieldError) {
+    return { ok: false, status: 422, body: { ok: false, ...fieldError } };
+  }
+
+  const addressError = addressAreaError(payload);
+  if (addressError) {
+    return { ok: false, status: 422, body: { ok: false, error: addressError } };
+  }
+
+  if (!payload.phone) return { ok: true, payload };
+
+  const phone = checkPhone(
+    payload.phone,
+    payload.phoneCountryCode || payload.countryCode,
+  );
+  if (!phone.valid) {
+    return {
+      ok: false,
+      status: 422,
+      body: { ok: false, field: "phone", error: "Please enter a valid number." },
+    };
+  }
+  return {
+    ok: true,
+    payload: {
+      ...payload,
+      phone: phone.e164,
+      phoneCountryCode: phone.countryCode,
+      phoneExt: normalizePhoneExt(payload.phoneExt) || phone.ext || undefined,
+    },
   };
 }

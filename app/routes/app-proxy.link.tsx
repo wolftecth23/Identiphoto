@@ -1,13 +1,11 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
-import { addressAreaError } from "../services/b2b-localization.server";
-import { checkPhone } from "../services/b2b-phone.server";
 import {
   parseB2bRegistrationPayload,
+  prepareRegistrationPayload,
   ProtectedCustomerDataAccessError,
   protectedCustomerDataHelpMessage,
   registerB2bCustomer,
-  registrationFieldError,
 } from "../services/b2b-registration.server";
 
 /**
@@ -17,6 +15,9 @@ import {
  * form posts same-origin through the app proxy, so Shopify signs the request
  * and adds `logged_in_customer_id` when the customer is signed in.
  */
+
+/** Submissions faster than this (ms after the form loaded) are bots. */
+const MIN_FILL_TIME_MS = 3000;
 
 function jsonResponse(body: unknown, status = 200) {
   return Response.json(body, { status });
@@ -75,8 +76,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const customerId = url.searchParams.get("logged_in_customer_id");
 
-  const payload = parseB2bRegistrationPayload(body);
-  if (!payload) {
+  // Bot check: the form's hidden "website" field stays empty for people, and
+  // a person takes longer than a couple of seconds to fill in the form.
+  const record = (body ?? {}) as Record<string, unknown>;
+  const elapsedMs = Number(record.elapsedMs);
+  if (
+    (typeof record.website === "string" && record.website.trim()) ||
+    (Number.isFinite(elapsedMs) && elapsedMs < MIN_FILL_TIME_MS)
+  ) {
+    return jsonResponse(
+      { ok: false, error: "We could not complete registration. Please try again." },
+      422,
+    );
+  }
+
+  const parsed = parseB2bRegistrationPayload(body);
+  if (!parsed) {
     return jsonResponse(
       {
         ok: false,
@@ -87,30 +102,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
   }
 
-  const fieldError = registrationFieldError(payload);
-  if (fieldError) {
-    return jsonResponse({ ok: false, ...fieldError }, 422);
+  const prepared = prepareRegistrationPayload(parsed);
+  if (!prepared.ok) {
+    return jsonResponse(prepared.body, prepared.status);
   }
-
-  const addressError = addressAreaError(payload);
-  if (addressError) {
-    return jsonResponse({ ok: false, error: addressError }, 422);
-  }
-
-  if (payload.phone) {
-    const phone = checkPhone(
-      payload.phone,
-      payload.phoneCountryCode || payload.countryCode,
-    );
-    if (!phone.valid) {
-      return jsonResponse(
-        { ok: false, field: "phone", error: "Please enter a valid number." },
-        422,
-      );
-    }
-    payload.phone = phone.formatted;
-    payload.phoneCountryCode = phone.countryCode;
-  }
+  const { payload } = prepared;
 
   try {
     const result = await registerB2bCustomer(admin, customerId, payload);

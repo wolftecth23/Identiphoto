@@ -202,6 +202,75 @@
     box-shadow: none;
   }
 
+  .b2b-register__phone-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 110px;
+    gap: 12px;
+    align-items: start;
+  }
+
+  /* Honeypot: off screen rather than display:none, which some bots skip. */
+  .b2b-register .b2b-register__trap {
+    position: absolute;
+    left: -10000px;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+  }
+
+  .b2b-register__combobox {
+    position: relative;
+  }
+  .b2b-register .b2b-register__suggestions {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    margin-top: 4px;
+    color: #202223;
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    overflow: hidden;
+  }
+  .b2b-register__suggestions-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px 4px;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #6d7175;
+  }
+  .b2b-register .b2b-register__suggestions-header button {
+    padding: 0 4px;
+    font-size: 18px;
+    line-height: 1;
+    color: inherit;
+    background: none;
+    border: 0;
+    cursor: pointer;
+  }
+  .b2b-register .b2b-register__suggestions ul {
+    max-height: 264px;
+    margin: 0;
+    padding: 0 0 6px;
+    list-style: none;
+    overflow-y: auto;
+  }
+  .b2b-register .b2b-register__suggestions li {
+    padding: 8px 12px;
+    font-size: 15px;
+    cursor: pointer;
+  }
+  .b2b-register .b2b-register__suggestions li:hover,
+  .b2b-register .b2b-register__suggestions li[aria-selected='true'] {
+    background: #f1f2f3;
+  }
+
   .b2b-register .b2b-register__field.b2b-register__field--invalid input,
   .b2b-register .b2b-register__field.b2b-register__field--invalid select,
   .b2b-register .b2b-register__field.b2b-register__field--invalid .b2b-register__phone {
@@ -315,6 +384,9 @@
     border-radius: 999px;
     font-size: 13px;
     background: color-mix(in srgb, #008060 14%, transparent);
+  }
+  .b2b-register__badge--pending {
+    background: color-mix(in srgb, #b98900 18%, transparent);
   }
   .b2b-register .b2b-register__after-register {
     margin: 16px 0 0;

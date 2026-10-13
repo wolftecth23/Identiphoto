@@ -7,6 +7,7 @@
     "business_account_title": "Business account",
     "status": "Status",
     "active": "Active",
+    "pending": "Pending approval",
     "submit": "Create an Account",
     "sections": {
       "personal": "Personal information",
@@ -17,10 +18,10 @@
       "first_name": "First name",
       "last_name": "Last name",
       "email": "Email",
-      "remote_assist": "Allow remote shopping assistance",
       "company": "Company",
       "phone": "Phone number",
       "phone_country": "Phone country code",
+      "phone_ext": "Ext. (optional)",
       "street_address": "Street address",
       "address_line_2": "Address line 2 (optional)",
       "address_line_3": "Address line 3 (optional)",
@@ -28,17 +29,19 @@
       "state_province": "State/Province",
       "state_placeholder": "Please select a region, state or province.",
       "city": "City",
+      "suggestions": "Suggestions",
+      "close_suggestions": "Close suggestions",
       "zip": "ZIP/Postal code",
       "country_placeholder": "Select a country",
-      "city_placeholder": "Select a city",
       "loading": "Loading…"
     },
     "messages": {
       "submit_error": "We could not complete registration. Please try again.",
-      "success": "Your account and company profile have been saved.",
-      "success_joined_company": "Your account has been saved and added to the existing company %companyName%.",
-      "sign_in_after_register": "Sign in with the email you registered to start ordering.",
-      "address_load_error": "We couldn't load the address options. Refresh the page and try again."
+      "success": "Thanks! Your registration has been received and is pending approval.",
+      "success_joined_company": "Thanks! Your request to join %companyName% has been received and is pending approval.",
+      "sign_in_after_register": "You can sign in with the email you registered. Business ordering opens once your account is approved.",
+      "address_load_error": "We couldn't load the address options. Refresh the page and try again.",
+      "pending_review": "We'll review your application and email you as soon as your business account is approved."
     },
     "validation": {
       "required": "%field% is required.",

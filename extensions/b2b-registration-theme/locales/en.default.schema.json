@@ -18,7 +18,7 @@
       "settings": {
         "page_path": {
           "label": "Registration page path",
-          "info": "Links ending in this path (for example, the \"Create Account\" menu item) are hidden when a customer is signed in."
+          "info": "Links ending in this path (for example, the \"Create Account\" menu item) are hidden when a customer is signed in, or has registered in this browser."
         }
       }
     }

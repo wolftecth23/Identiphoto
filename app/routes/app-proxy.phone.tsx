@@ -7,7 +7,7 @@ import { checkPhone } from "../services/b2b-phone.server";
  *
  * Checks the registration form's phone number as the customer leaves the
  * field. POST `{ number, country }` (a POST keeps the number out of URLs and
- * logs); returns `{ valid, countryCode, national }`. The submit endpoint
+ * logs); returns `{ valid, countryCode, national, ext }`. The submit endpoint
  * checks again, so this only gives earlier feedback.
  */
 export const loader = async () => {
@@ -37,6 +37,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           valid: true,
           countryCode: check.countryCode,
           national: check.national,
+          ext: check.ext,
         }
       : { valid: false },
     { headers: { "Cache-Control": "no-store" } },

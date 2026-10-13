@@ -28,33 +28,45 @@ export type RegistrationEmailDetails = {
 };
 
 const EN = {
-  subject: (shop: string) => `Your business registration with ${shop} is complete`,
+  subject: (shop: string) => `We received your business registration with ${shop}`,
   greeting: (name: string) => (name ? `Hi ${name},` : "Hi,"),
   intro: (shop: string) =>
-    `Thanks for registering with ${shop}. Your business account is ready.`,
+    `Thanks for registering with ${shop}. Our team will review your application and email you once your business account is approved.`,
   created: (company: string) =>
-    `We created the company ${company} and added you as its contact.`,
+    `Your application for the company ${company} is pending approval.`,
   joined: (company: string) =>
-    `You have been added to the existing company ${company}.`,
+    `Your request to join the existing company ${company} is pending approval.`,
   signIn: (email: string) =>
-    `Sign in with ${email} to see your business account and place orders:`,
+    `Once approved, sign in with ${email} to see your business account and place orders:`,
   button: "Go to my account",
   signOff: "Thank you,",
+  approvedSubject: (shop: string) =>
+    `Your business account with ${shop} is approved`,
+  approvedIntro: (company: string) =>
+    `Good news: your business account for ${company} has been approved.`,
+  approvedSignIn: (email: string) =>
+    `Sign in with ${email} to see your business account and place orders:`,
 };
 
 const FR: typeof EN = {
-  subject: (shop) => `Votre inscription professionnelle chez ${shop} est confirmée`,
+  subject: (shop) => `Nous avons reçu votre inscription professionnelle chez ${shop}`,
   greeting: (name) => (name ? `Bonjour ${name},` : "Bonjour,"),
   intro: (shop) =>
-    `Merci de votre inscription chez ${shop}. Votre compte professionnel est prêt.`,
+    `Merci de votre inscription chez ${shop}. Notre équipe examinera votre demande et vous écrira dès que votre compte professionnel sera approuvé.`,
   created: (company) =>
-    `Nous avons créé l'entreprise ${company} et vous avons ajouté comme contact.`,
+    `Votre demande pour l'entreprise ${company} est en attente d'approbation.`,
   joined: (company) =>
-    `Vous avez été ajouté à l'entreprise existante ${company}.`,
+    `Votre demande pour rejoindre l'entreprise existante ${company} est en attente d'approbation.`,
   signIn: (email) =>
-    `Connectez-vous avec ${email} pour accéder à votre compte professionnel et passer commande :`,
+    `Une fois la demande approuvée, connectez-vous avec ${email} pour accéder à votre compte professionnel et passer commande :`,
   button: "Accéder à mon compte",
   signOff: "Merci,",
+  approvedSubject: (shop) =>
+    `Votre compte professionnel chez ${shop} est approuvé`,
+  approvedIntro: (company) =>
+    `Bonne nouvelle : votre compte professionnel pour ${company} a été approuvé.`,
+  approvedSignIn: (email) =>
+    `Connectez-vous avec ${email} pour accéder à votre compte professionnel et passer commande :`,
 };
 
 function escapeHtml(value: string): string {
@@ -66,26 +78,58 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-/** Subject and bodies of the confirmation sent after a successful registration. */
+function copyFor(locale: string | undefined): typeof EN {
+  return locale?.toLowerCase().startsWith("fr") ? FR : EN;
+}
+
+/**
+ * Subject and bodies of the email sent when a registration is received; it
+ * tells the customer the account is pending approval.
+ */
 export function buildRegistrationEmail(details: RegistrationEmailDetails): {
   subject: string;
   text: string;
   html: string;
 } {
-  const copy = details.locale?.toLowerCase().startsWith("fr") ? FR : EN;
+  const copy = copyFor(details.locale);
+  return buildEmail(details, {
+    subject: copy.subject(details.shopName),
+    lines: [
+      copy.intro(details.shopName),
+      details.created
+        ? copy.created(details.companyName)
+        : copy.joined(details.companyName),
+    ],
+    signIn: copy.signIn(details.to),
+  });
+}
+
+/** Subject and bodies of the email sent when staff approve a registration. */
+export function buildApprovalEmail(
+  details: Omit<RegistrationEmailDetails, "created">,
+): { subject: string; text: string; html: string } {
+  const copy = copyFor(details.locale);
+  return buildEmail(details, {
+    subject: copy.approvedSubject(details.shopName),
+    lines: [copy.approvedIntro(details.companyName)],
+    signIn: copy.approvedSignIn(details.to),
+  });
+}
+
+function buildEmail(
+  details: Omit<RegistrationEmailDetails, "created">,
+  content: { subject: string; lines: string[]; signIn: string },
+): { subject: string; text: string; html: string } {
+  const copy = copyFor(details.locale);
   const firstName = details.firstName?.trim() ?? "";
   const accountUrl = `${details.storeUrl.replace(/\/+$/, "")}/account`;
-  const outcome = details.created
-    ? copy.created(details.companyName)
-    : copy.joined(details.companyName);
 
   const text = [
     copy.greeting(firstName),
     "",
-    copy.intro(details.shopName),
-    outcome,
+    ...content.lines,
     "",
-    copy.signIn(details.to),
+    content.signIn,
     accountUrl,
     "",
     copy.signOff,
@@ -95,9 +139,8 @@ export function buildRegistrationEmail(details: RegistrationEmailDetails): {
   // Each piece is escaped once here, so names like "Smith & Sons" are safe.
   const h = {
     greeting: escapeHtml(copy.greeting(firstName)),
-    intro: escapeHtml(copy.intro(details.shopName)),
-    outcome: escapeHtml(outcome),
-    signIn: escapeHtml(copy.signIn(details.to)),
+    body: content.lines.map(escapeHtml).join("<br>"),
+    signIn: escapeHtml(content.signIn),
     button: escapeHtml(copy.button),
     accountUrl: escapeHtml(accountUrl),
     signOff: escapeHtml(copy.signOff),
@@ -111,7 +154,7 @@ export function buildRegistrationEmail(details: RegistrationEmailDetails): {
       <tr>
         <td style="padding:32px;font-size:16px;line-height:1.5;">
           <p style="margin:0 0 16px;">${h.greeting}</p>
-          <p style="margin:0 0 16px;">${h.intro}<br>${h.outcome}</p>
+          <p style="margin:0 0 16px;">${h.body}</p>
           <p style="margin:0 0 24px;">${h.signIn}</p>
           <p style="margin:0 0 24px;">
             <a href="${h.accountUrl}" style="display:inline-block;padding:12px 20px;background:#202223;color:#ffffff;text-decoration:none;border-radius:6px;">${h.button}</a>
@@ -123,7 +166,7 @@ export function buildRegistrationEmail(details: RegistrationEmailDetails): {
   </body>
 </html>`;
 
-  return { subject: copy.subject(details.shopName), text, html };
+  return { subject: content.subject, text, html };
 }
 
 export type SmtpConfig = {
@@ -182,15 +225,30 @@ export function smtpMailerFromEnv(): { mailer: Mailer; from: string } | null {
   return smtpMailer;
 }
 
-/** Sends the registration confirmation to the customer. */
+/** Sends the "registration received" email to the customer. */
 export async function sendRegistrationEmail(
   sender: { mailer: Mailer; from: string },
   details: RegistrationEmailDetails,
 ): Promise<void> {
-  const { subject, text, html } = buildRegistrationEmail(details);
+  await send(sender, details.to, buildRegistrationEmail(details));
+}
+
+/** Sends the "account approved" email to the customer. */
+export async function sendApprovalEmail(
+  sender: { mailer: Mailer; from: string },
+  details: Omit<RegistrationEmailDetails, "created">,
+): Promise<void> {
+  await send(sender, details.to, buildApprovalEmail(details));
+}
+
+async function send(
+  sender: { mailer: Mailer; from: string },
+  to: string,
+  { subject, text, html }: { subject: string; text: string; html: string },
+): Promise<void> {
   await sender.mailer.sendMail({
     from: sender.from,
-    to: details.to,
+    to,
     subject,
     text,
     html,
