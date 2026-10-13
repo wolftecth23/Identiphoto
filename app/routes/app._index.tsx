@@ -1,347 +1,360 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useFetcher } from "react-router";
+import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
-import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { authenticate } from "../shopify.server";
+import {
+  approveRegistration,
+  listPendingRegistrations,
+  listRecentDecisions,
+  rejectRegistration,
+  type Registration,
+} from "../services/b2b-approval.server";
 
+/**
+ * The app's home page: B2B registrations waiting for staff approval, and the
+ * latest decisions. Approving lets the contact order for their company;
+ * rejecting takes them off the company.
+ */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-
-  return null;
-};
-
-export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin } = await authenticate.admin(request);
-  const color = ["Red", "Orange", "Yellow", "Green"][
-    Math.floor(Math.random() * 4)
-  ];
-  const response = await admin.graphql(
-    `#graphql
-      mutation populateProduct($product: ProductCreateInput!) {
-        productCreate(product: $product) {
-          product {
-            id
-            title
-            handle
-            status
-            variants(first: 10) {
-              edges {
-                node {
-                  id
-                  price
-                  barcode
-                  createdAt
-                }
-              }
-            }
-            demoInfo: metafield(namespace: "$app", key: "demo_info") {
-              jsonValue
-            }
-          }
-        }
-      }`,
-    {
-      variables: {
-        product: {
-          title: `${color} Snowboard`,
-          metafields: [
-            {
-              namespace: "$app",
-              key: "demo_info",
-              value: "Created by React Router Template",
-            },
-          ],
-        },
-      },
-    },
-  );
-  const responseJson = await response.json();
-
-  const product = responseJson.data!.productCreate!.product!;
-  const variantId = product.variants.edges[0]!.node!.id!;
-
-  const variantResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-        productVariants {
-          id
-          price
-          barcode
-          createdAt
-        }
-      }
-    }`,
-    {
-      variables: {
-        productId: product.id,
-        variants: [{ id: variantId, price: "100.00" }],
-      },
-    },
-  );
-
-  const variantResponseJson = await variantResponse.json();
-
-  const metaobjectResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpsertMetaobject($handle: MetaobjectHandleInput!, $values: JSON!) {
-      metaobjectUpsert(handle: $handle, values: $values) {
-        metaobject {
-          id
-          handle
-          values
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }`,
-    {
-      variables: {
-        handle: {
-          type: "$app:example",
-          handle: "demo-entry",
-        },
-        values: {
-          title: "Demo Entry",
-          description:
-            "This metaobject was created by the Shopify app template to demonstrate the metaobject API.",
-        },
-      },
-    },
-  );
-
-  const metaobjectResponseJson = await metaobjectResponse.json();
-
-  return {
-    product: responseJson!.data!.productCreate!.product,
-    variant:
-      variantResponseJson!.data!.productVariantsBulkUpdate!.productVariants,
-    metaobject: metaobjectResponseJson!.data!.metaobjectUpsert!.metaobject,
-  };
+  const [pending, recent] = await Promise.all([
+    listPendingRegistrations(admin),
+    listRecentDecisions(admin),
+  ]);
+  return { pending, recent };
 };
 
-export default function Index() {
-  const fetcher = useFetcher<typeof action>();
+type ActionResult =
+  | { ok: true; intent: "approve" | "reject"; emailSent?: boolean }
+  | { ok: false; error: string };
 
+export const action = async ({
+  request,
+}: ActionFunctionArgs): Promise<ActionResult> => {
+  const { admin } = await authenticate.admin(request);
+  const form = await request.formData();
+  const customerId = String(form.get("customerId") ?? "");
+  const intent = form.get("intent");
+  if (!customerId.startsWith("gid://shopify/Customer/")) {
+    return { ok: false, error: "Unknown customer." };
+  }
+
+  if (intent === "approve") {
+    const approvedBy = String(form.get("approvedBy") ?? "").trim();
+    if (!approvedBy) {
+      return { ok: false, error: "Enter your name in “Approved by” first." };
+    }
+    const result = await approveRegistration(admin, customerId, approvedBy);
+    return result.ok
+      ? { ok: true, intent: "approve", emailSent: result.emailSent }
+      : result;
+  }
+  if (intent === "reject") {
+    const result = await rejectRegistration(admin, customerId);
+    return result.ok ? { ok: true, intent: "reject" } : result;
+  }
+  return { ok: false, error: "Unknown action." };
+};
+
+const APPROVED_BY_KEY = "b2b-approved-by";
+
+function numericId(gid: string) {
+  return gid.split("/").pop() ?? "";
+}
+
+/** Fixed format and time zone, so the server and browser render the same text. */
+const dateFormat = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeZone: "UTC",
+});
+
+function formatDate(iso: string) {
+  return dateFormat.format(new Date(iso));
+}
+
+/** "New company" when the registrant created it, else "Joining existing company". */
+function requestType(registration: Registration) {
+  const joining = registration.companies.some((company) => company.contactCount > 1);
+  return joining
+    ? { label: "Joining existing company", tone: "info" as const }
+    : { label: "New company", tone: "warning" as const };
+}
+
+function Detail({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <s-stack direction="inline" gap="small-200">
+      <s-text type="strong">{label}:</s-text>
+      <s-text>{children}</s-text>
+    </s-stack>
+  );
+}
+
+function PendingCard({
+  registration,
+  approvedBy,
+  onMissingName,
+  onReviewed,
+}: {
+  registration: Registration;
+  approvedBy: string;
+  onMissingName: () => void;
+  onReviewed: (registration: Registration, status: "approved" | "rejected") => void;
+}) {
+  const fetcher = useFetcher<ActionResult>({ key: registration.customerId });
   const shopify = useAppBridge();
-  const isLoading =
-    ["loading", "submitting"].includes(fetcher.state) &&
-    fetcher.formMethod === "POST";
+  const [confirmingReject, setConfirmingReject] = useState(false);
+  const submitting = fetcher.state !== "idle";
+  const submittingIntent = submitting ? fetcher.formData?.get("intent") : null;
+  const result = fetcher.state === "idle" ? fetcher.data : undefined;
 
   useEffect(() => {
-    if (fetcher.data?.product?.id) {
-      shopify.toast.show("Product created");
+    if (!result) return;
+    if (result.ok) {
+      shopify.toast.show(
+        result.intent === "approve"
+          ? `${registration.name} approved${result.emailSent ? " and emailed" : ""}`
+          : `${registration.name} rejected`,
+      );
+      onReviewed(registration, result.intent === "approve" ? "approved" : "rejected");
+    } else {
+      shopify.toast.show("Could not complete the action", { isError: true });
     }
-  }, [fetcher.data?.product?.id, shopify]);
+    // Only react to a new result.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result]);
 
-  const generateProduct = () => fetcher.submit({}, { method: "POST" });
+  const send = (intent: "approve" | "reject") => {
+    if (intent === "approve" && !approvedBy.trim()) {
+      onMissingName();
+      return;
+    }
+    setConfirmingReject(false);
+    fetcher.submit(
+      { intent, customerId: registration.customerId, approvedBy },
+      { method: "POST" },
+    );
+  };
+
+  const type = requestType(registration);
 
   return (
-    <s-page heading="Shopify app template">
-      <s-button slot="primary-action" onClick={generateProduct}>
-        Generate a product
-      </s-button>
-
-      <s-section heading="Congrats on creating a new Shopify app 🎉">
-        <s-paragraph>
-          This embedded app template uses{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/tools/app-bridge"
-            target="_blank"
-          >
-            App Bridge
-          </s-link>{" "}
-          interface examples like an{" "}
-          <s-link href="/app/additional">additional page in the app nav</s-link>
-          , as well as an{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            Admin GraphQL
-          </s-link>{" "}
-          mutation demo, to provide a starting point for app development.
-        </s-paragraph>
-      </s-section>
-      <s-section heading="Get started with products">
-        <s-paragraph>
-          Generate a product with GraphQL and get the JSON output for that
-          product. Learn more about the{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate"
-            target="_blank"
-          >
-            productCreate
-          </s-link>{" "}
-          mutation in our API references. Includes a product{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data/metafields"
-            target="_blank"
-          >
-            metafield
-          </s-link>{" "}
-          and{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data/metaobjects"
-            target="_blank"
-          >
-            metaobject
-          </s-link>
-          .
-        </s-paragraph>
-        <s-stack direction="inline" gap="base">
-          <s-button
-            onClick={generateProduct}
-            {...(isLoading ? { loading: true } : {})}
-          >
-            Generate a product
-          </s-button>
-          {fetcher.data?.product && (
-            <s-button
-              onClick={() => {
-                shopify.intents.invoke?.("edit:shopify/Product", {
-                  value: fetcher.data?.product?.id,
-                });
-              }}
-              target="_blank"
-              variant="tertiary"
-            >
-              Edit product
-            </s-button>
-          )}
+    <s-box padding="base" borderWidth="base" borderRadius="base">
+      <s-stack direction="block" gap="base">
+        <s-stack direction="inline" gap="small-200" alignItems="center">
+          <s-heading>{registration.name}</s-heading>
+          <s-badge tone={type.tone}>{type.label}</s-badge>
         </s-stack>
-        {fetcher.data?.product && (
-          <s-section heading="productCreate mutation">
-            <s-stack direction="block" gap="base">
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre
-                  style={{
-                    margin: 0,
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  <code>{JSON.stringify(fetcher.data.product, null, 2)}</code>
-                </pre>
-              </s-box>
 
-              <s-heading>productVariantsBulkUpdate mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre
-                  style={{
-                    margin: 0,
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  <code>{JSON.stringify(fetcher.data.variant, null, 2)}</code>
-                </pre>
-              </s-box>
-
-              <s-heading>metaobjectUpsert mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre
-                  style={{
-                    margin: 0,
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  <code>
-                    {JSON.stringify(fetcher.data.metaobject, null, 2)}
-                  </code>
-                </pre>
-              </s-box>
+        <s-stack direction="block" gap="small-200">
+          <Detail label="Email">{registration.email}</Detail>
+          {registration.companies.map((company) => (
+            <s-stack key={company.id} direction="block" gap="small-200">
+              <s-stack direction="inline" gap="small-200">
+                <s-text type="strong">Company:</s-text>
+                <s-link href={`shopify://admin/companies/${numericId(company.id)}`}>
+                  {company.name}
+                </s-link>
+                {company.contactCount > 1 ? (
+                  <s-text color="subdued">
+                    ({company.contactCount - 1} other contact
+                    {company.contactCount > 2 ? "s" : ""})
+                  </s-text>
+                ) : null}
+              </s-stack>
+              {company.address ? <Detail label="Address">{company.address}</Detail> : null}
+              {company.phone ? <Detail label="Phone">{company.phone}</Detail> : null}
             </s-stack>
-          </s-section>
+          ))}
+          {registration.note ? <Detail label="Note">{registration.note}</Detail> : null}
+          <Detail label="Registered">{formatDate(registration.registeredAt)}</Detail>
+          <s-link href={`shopify://admin/customers/${numericId(registration.customerId)}`}>
+            Open customer in Shopify
+          </s-link>
+        </s-stack>
+
+        {result && !result.ok ? (
+          <s-banner tone="critical" heading="Could not complete the action">
+            {result.error}
+          </s-banner>
+        ) : null}
+
+        {confirmingReject ? (
+          <s-banner tone="warning" heading={`Reject ${registration.name}?`}>
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                They&rsquo;ll be removed from the company and won&rsquo;t be able to
+                order for it. Their customer account stays, and no email is sent.
+              </s-paragraph>
+              <s-stack direction="inline" gap="small-200">
+                <s-button
+                  tone="critical"
+                  variant="primary"
+                  onClick={() => send("reject")}
+                >
+                  Yes, reject
+                </s-button>
+                <s-button onClick={() => setConfirmingReject(false)}>Cancel</s-button>
+              </s-stack>
+            </s-stack>
+          </s-banner>
+        ) : (
+          <s-stack direction="inline" gap="small-200">
+            {/* React 18 writes `disabled={false}` as disabled="false", which
+                still disables a web component, so these are only spread in. */}
+            <s-button
+              variant="primary"
+              onClick={() => send("approve")}
+              {...(submittingIntent === "approve" ? { loading: true } : {})}
+              {...(submitting ? { disabled: true } : {})}
+            >
+              Approve
+            </s-button>
+            <s-button
+              tone="critical"
+              onClick={() => setConfirmingReject(true)}
+              {...(submittingIntent === "reject" ? { loading: true } : {})}
+              {...(submitting ? { disabled: true } : {})}
+            >
+              Reject
+            </s-button>
+          </s-stack>
+        )}
+      </s-stack>
+    </s-box>
+  );
+}
+
+export default function Registrations() {
+  const { pending, recent } = useLoaderData<typeof loader>();
+  const [approvedBy, setApprovedBy] = useState("");
+  const [nameMissing, setNameMissing] = useState(false);
+  const nameSection = useRef<HTMLDivElement>(null);
+  // Decisions made on this page. Shown right away, because Shopify's customer
+  // search can take a few seconds to reflect the new tags.
+  const [reviewed, setReviewed] = useState<
+    { registration: Registration; status: "approved" | "rejected" }[]
+  >([]);
+
+  // Remembered in this browser so staff don't retype their name each time.
+  useEffect(() => {
+    try {
+      setApprovedBy(window.localStorage.getItem(APPROVED_BY_KEY) ?? "");
+    } catch {
+      // Storage can be blocked; the field just starts empty.
+    }
+  }, []);
+
+  const changeApprovedBy = (value: string) => {
+    setApprovedBy(value);
+    if (value.trim()) setNameMissing(false);
+    try {
+      window.localStorage.setItem(APPROVED_BY_KEY, value);
+    } catch {
+      // Not remembered; nothing else depends on it.
+    }
+  };
+
+  const reviewedIds = new Set(reviewed.map((entry) => entry.registration.customerId));
+  const waiting = pending.filter((entry) => !reviewedIds.has(entry.customerId));
+  const decisions = [
+    ...reviewed.map(({ registration, status }) => ({ ...registration, status })),
+    ...recent.filter((entry) => !reviewedIds.has(entry.customerId)),
+  ].slice(0, 10);
+
+  return (
+    <s-page heading="B2B registrations">
+      <s-section heading="How approval works">
+        <s-ordered-list>
+          <s-list-item>
+            A business registers on your store. Their customer account and company
+            are created, and they appear below as <s-text type="strong">waiting for approval</s-text>.
+            Until you approve them they can sign in, but can&rsquo;t place business orders.
+          </s-list-item>
+          <s-list-item>
+            Check their details and collect what you need (account forms, credit
+            check, shipping account, tax-exempt certificate).
+          </s-list-item>
+          <s-list-item>
+            <s-text type="strong">Approve</s-text> to let them order for the company. The
+            company&rsquo;s “B2B account status”, “Approved by” and “Approved on” fields are
+            filled in and the customer is emailed. <s-text type="strong">Reject</s-text> to
+            remove them from the company.
+          </s-list-item>
+        </s-ordered-list>
+      </s-section>
+
+      <s-section heading="Your name">
+        <div ref={nameSection}>
+          <s-text-field
+            label="Approved by"
+            details="Saved in the company's “Approved by” field when you approve someone."
+            value={approvedBy}
+            onInput={(event) => changeApprovedBy(event.currentTarget.value)}
+            {...(nameMissing
+              ? { error: "Enter your name before approving a registration." }
+              : {})}
+          />
+        </div>
+      </s-section>
+
+      <s-section heading={`Waiting for approval (${waiting.length})`}>
+        {waiting.length ? (
+          <s-stack direction="block" gap="base">
+            {waiting.map((registration) => (
+              <PendingCard
+                key={registration.customerId}
+                registration={registration}
+                approvedBy={approvedBy}
+                onMissingName={() => {
+                  setNameMissing(true);
+                  nameSection.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                }}
+                onReviewed={(entry, status) =>
+                  setReviewed((current) => [{ registration: entry, status }, ...current])
+                }
+              />
+            ))}
+          </s-stack>
+        ) : (
+          <s-paragraph>
+            Nothing is waiting for approval. New registrations from the store appear
+            here.
+          </s-paragraph>
         )}
       </s-section>
 
-      <s-section slot="aside" heading="App template specs">
-        <s-paragraph>
-          <s-text>Framework: </s-text>
-          <s-link href="https://reactrouter.com/" target="_blank">
-            React Router
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Interface: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/app-home/using-polaris-components"
-            target="_blank"
-          >
-            Polaris web components
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>API: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            GraphQL
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Custom data: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data"
-            target="_blank"
-          >
-            Metafields &amp; metaobjects
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Database: </s-text>
-          <s-link href="https://www.prisma.io/" target="_blank">
-            Prisma
-          </s-link>
-        </s-paragraph>
-      </s-section>
-
-      <s-section slot="aside" heading="Next steps">
-        <s-unordered-list>
-          <s-list-item>
-            Build an{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/getting-started/build-app-example"
-              target="_blank"
-            >
-              example app
-            </s-link>
-          </s-list-item>
-          <s-list-item>
-            Explore Shopify&apos;s API with{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/tools/graphiql-admin-api"
-              target="_blank"
-            >
-              GraphiQL
-            </s-link>
-          </s-list-item>
-        </s-unordered-list>
+      <s-section heading="Recently reviewed">
+        {decisions.length ? (
+          <s-stack direction="block" gap="small-200">
+            {decisions.map((entry) => (
+              <s-stack
+                key={entry.customerId}
+                direction="inline"
+                gap="small-200"
+                alignItems="center"
+              >
+                <s-badge tone={entry.status === "approved" ? "success" : "critical"}>
+                  {entry.status === "approved" ? "Approved" : "Rejected"}
+                </s-badge>
+                <s-link href={`shopify://admin/customers/${numericId(entry.customerId)}`}>
+                  {entry.name}
+                </s-link>
+                <s-text color="subdued">
+                  {entry.companies.map((company) => company.name).join(", ") ||
+                    "No company"}
+                </s-text>
+              </s-stack>
+            ))}
+          </s-stack>
+        ) : (
+          <s-paragraph>No registrations have been approved or rejected yet.</s-paragraph>
+        )}
       </s-section>
     </s-page>
   );

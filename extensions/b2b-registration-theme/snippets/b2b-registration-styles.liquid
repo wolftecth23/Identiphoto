@@ -329,8 +329,55 @@
     margin: 0;
   }
   .b2b-register .b2b-register__submit[aria-busy='true'] {
-    opacity: 0.6;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    opacity: 0.85;
     cursor: progress;
+  }
+  .b2b-register__spinner {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: b2b-register-spin 0.7s linear infinite;
+  }
+  @keyframes b2b-register-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .b2b-register__spinner {
+      animation-duration: 2s;
+    }
+  }
+
+  .b2b-register .b2b-register__match {
+    padding: 20px 24px;
+    border: 1px solid color-mix(in srgb, #2c6ecb 45%, transparent);
+    border-radius: var(--b2b-radius);
+    background: color-mix(in srgb, #2c6ecb 8%, transparent);
+  }
+  .b2b-register .b2b-register__match-text {
+    margin: 0 0 6px;
+    font-weight: 600;
+  }
+  .b2b-register .b2b-register__match-note {
+    margin: 0 0 16px;
+    color: var(--b2b-muted);
+  }
+  .b2b-register__match-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .b2b-register .b2b-register__match-actions button {
+    min-height: 48px;
+    margin: 0;
   }
 
   .b2b-register .b2b-register__banner {

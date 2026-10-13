@@ -9,6 +9,14 @@
     "active": "Active",
     "pending": "Pending approval",
     "submit": "Create an Account",
+    "submitting": "Creating account…",
+    "match": {
+      "domain": "A business account for %companyName% already uses email addresses ending in @%domain%.",
+      "name": "%companyName% already has a business account with us.",
+      "note": "Join it if you work there, or register your company separately. Either way, our team reviews the request before ordering is enabled.",
+      "join": "Join %companyName%",
+      "new": "Register %companyName% as a new company"
+    },
     "sections": {
       "personal": "Personal information",
       "company": "Company information",

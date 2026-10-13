@@ -22,11 +22,15 @@ import {
 
 type UserError = { field?: string[] | null; message: string };
 
-export type PendingRegistration = {
+export type RegistrationStatusTag = "pending" | "approved" | "rejected";
+
+export type Registration = {
   customerId: string;
   name: string;
   email: string;
   registeredAt: string;
+  updatedAt: string;
+  status: RegistrationStatusTag;
   /** Customer note: holds the phone extension, if one was given. */
   note: string;
   companies: {
@@ -39,10 +43,25 @@ export type PendingRegistration = {
   }[];
 };
 
-export async function listPendingRegistrations(
+function statusOf(tags: string[]): RegistrationStatusTag | null {
+  if (tags.includes(REGISTRATION_TAGS.pending)) return "pending";
+  if (tags.includes(REGISTRATION_TAGS.approved)) return "approved";
+  if (tags.includes(REGISTRATION_TAGS.rejected)) return "rejected";
+  return null;
+}
+
+/**
+ * Registrations whose status is one of `statuses`. Customer search lags a few
+ * seconds behind tag changes, so each result is checked against the
+ * customer's current tags: someone approved a moment ago doesn't come back as
+ * pending.
+ */
+async function listRegistrations(
   admin: AdminApiContext,
-): Promise<PendingRegistration[]> {
-  type PendingQuery = {
+  statuses: RegistrationStatusTag[],
+  limit: number,
+): Promise<Registration[]> {
+  type RegistrationsQuery = {
     data?: {
       customers?: {
         nodes: {
@@ -50,7 +69,9 @@ export async function listPendingRegistrations(
           displayName: string;
           defaultEmailAddress?: { emailAddress?: string | null } | null;
           createdAt: string;
+          updatedAt: string;
           note?: string | null;
+          tags: string[];
           companyContactProfiles: {
             company: {
               id: string;
@@ -76,12 +97,12 @@ export async function listPendingRegistrations(
     };
   };
 
-  const data = await graphql<PendingQuery>(
+  const data = await graphql<RegistrationsQuery>(
     admin,
     `
       #graphql
-      query B2bPendingRegistrations($query: String!) {
-        customers(first: 50, query: $query, sortKey: CREATED_AT, reverse: true) {
+      query B2bPendingRegistrations($query: String!, $first: Int!) {
+        customers(first: $first, query: $query, sortKey: UPDATED_AT, reverse: true) {
           nodes {
             id
             displayName
@@ -89,7 +110,9 @@ export async function listPendingRegistrations(
               emailAddress
             }
             createdAt
+            updatedAt
             note
+            tags
             companyContactProfiles {
               company {
                 id
@@ -116,37 +139,65 @@ export async function listPendingRegistrations(
         }
       }
     `,
-    { query: `tag:'${REGISTRATION_TAGS.pending}'` },
+    {
+      query: statuses
+        .map((status) => `tag:'${REGISTRATION_TAGS[status]}'`)
+        .join(" OR "),
+      first: limit,
+    },
   );
 
-  return (data.data?.customers?.nodes ?? []).map((customer) => ({
-    customerId: customer.id,
-    name: customer.displayName,
-    email: customer.defaultEmailAddress?.emailAddress ?? "",
-    registeredAt: customer.createdAt,
-    note: customer.note ?? "",
-    companies: customer.companyContactProfiles.map(({ company }) => {
-      const location = company.locations.nodes[0];
-      const address = location?.shippingAddress;
-      return {
-        id: company.id,
-        name: company.name,
-        contactCount: company.contactsCount?.count ?? 0,
-        phone: location?.phone ?? "",
-        address: address
-          ? [
-              address.address1,
-              address.address2,
-              address.city,
-              [address.zoneCode, address.zip].filter(Boolean).join(" "),
-              address.countryCode,
-            ]
-              .filter(Boolean)
-              .join(", ")
-          : "",
-      };
-    }),
-  }));
+  const registrations: Registration[] = [];
+  for (const customer of data.data?.customers?.nodes ?? []) {
+    const status = statusOf(customer.tags);
+    if (!status || !statuses.includes(status)) continue;
+    registrations.push({
+      customerId: customer.id,
+      name: customer.displayName,
+      email: customer.defaultEmailAddress?.emailAddress ?? "",
+      registeredAt: customer.createdAt,
+      updatedAt: customer.updatedAt,
+      status,
+      note: customer.note ?? "",
+      companies: customer.companyContactProfiles.map(({ company }) => {
+        const location = company.locations.nodes[0];
+        const address = location?.shippingAddress;
+        return {
+          id: company.id,
+          name: company.name,
+          contactCount: company.contactsCount?.count ?? 0,
+          phone: location?.phone ?? "",
+          address: address
+            ? [
+                address.address1,
+                address.address2,
+                address.city,
+                [address.zoneCode, address.zip].filter(Boolean).join(" "),
+                address.countryCode,
+              ]
+                .filter(Boolean)
+                .join(", ")
+            : "",
+        };
+      }),
+    });
+  }
+  return registrations;
+}
+
+/** Registrations waiting for a decision, newest activity first. */
+export function listPendingRegistrations(
+  admin: AdminApiContext,
+): Promise<Registration[]> {
+  return listRegistrations(admin, ["pending"], 50);
+}
+
+/** The most recently approved or rejected registrations. */
+export function listRecentDecisions(
+  admin: AdminApiContext,
+  limit = 10,
+): Promise<Registration[]> {
+  return listRegistrations(admin, ["approved", "rejected"], limit);
 }
 
 type ApprovalCustomer = {

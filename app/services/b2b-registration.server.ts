@@ -25,7 +25,16 @@ export type B2bRegistrationPayload = {
   zip: string;
   /** Storefront locale the form was submitted from; picks the email language. */
   locale?: string;
+  /**
+   * The registrant's answer after the form showed them an existing company
+   * that matches: join it, or register a new company anyway. Unset on the
+   * first submit, which only asks.
+   */
+  companyChoice?: "join" | "new";
 };
+
+/** Why an existing company was offered to the registrant. */
+export type CompanyMatchReason = "email_domain" | "company_name";
 
 export type B2bRegistrationOptions = {
   /**
@@ -59,6 +68,17 @@ export type B2bRegistrationResult =
       ok: false;
       error: string;
       userErrors?: { field?: string[]; message: string }[];
+      /**
+       * COMPANY_MATCH: an existing company matches. Nothing was created; the
+       * form asks the registrant and submits again with `companyChoice`.
+       */
+      code?: "COMPANY_MATCH";
+      match?: {
+        companyName: string;
+        reason: CompanyMatchReason;
+        /** The business email domain that matched, for the "email_domain" reason. */
+        emailDomain?: string;
+      };
     };
 
 export type RegistrationStatus = "pending" | "approved";
@@ -1268,7 +1288,7 @@ async function findMatchingCompany(
   admin: AdminApiContext,
   companyName: string,
   emailDomain: string | null,
-): Promise<CompanySummary | null> {
+): Promise<{ company: CompanySummary; reason: CompanyMatchReason } | null> {
   const { nameMatches, recent } = await findCompaniesByName(
     admin,
     companyName,
@@ -1282,12 +1302,11 @@ async function findMatchingCompany(
       nameMatches,
       recent,
     );
-    if (domainCompany) return domainCompany;
+    if (domainCompany) return { company: domainCompany, reason: "email_domain" };
   }
 
-  return (
-    nameMatches.find(({ rank }) => rank <= SAME_NAME_RANK)?.company ?? null
-  );
+  const byName = nameMatches.find(({ rank }) => rank <= SAME_NAME_RANK)?.company;
+  return byName ? { company: byName, reason: "company_name" } : null;
 }
 
 /**
@@ -1491,13 +1510,13 @@ export async function linkCustomerToB2bCompany(
       | { ok: true; company: { id: string; name: string }; created: boolean }
       | Extract<B2bRegistrationResult, { ok: false }>
     > => {
-      const existing = await findMatchingCompany(
-        admin,
-        companyName,
-        emailDomain,
-      );
+      // "new": the registrant saw the matching company and chose not to join.
+      const existing =
+        payload.companyChoice === "new"
+          ? null
+          : await findMatchingCompany(admin, companyName, emailDomain);
       if (existing) {
-        return { ok: true, company: existing, created: false };
+        return { ok: true, company: existing.company, created: false };
       }
 
       const locationName = payload.city.trim() || companyName.slice(0, 255);
@@ -1881,6 +1900,62 @@ export async function getRegistrationCustomer(
   };
 }
 
+/**
+ * The existing company this registration would join, if any, unless the
+ * signed-in customer already belongs to it (then there's nothing to ask).
+ */
+async function companyMatchToConfirm(
+  admin: AdminApiContext,
+  loggedInCustomerId: string | null,
+  payload: B2bRegistrationPayload,
+): Promise<NonNullable<Extract<B2bRegistrationResult, { ok: false }>["match"]> | null> {
+  let email = payload.email;
+  let ownCompanyIds: string[] = [];
+  if (loggedInCustomerId) {
+    type CustomerQuery = {
+      data?: {
+        customer?: {
+          email?: string | null;
+          companyContactProfiles: { company: { id: string } }[];
+        } | null;
+      };
+    };
+    const data = await graphql<CustomerQuery>(
+      admin,
+      `
+        #graphql
+        query B2bRegistrationMatchCustomer($id: ID!) {
+          customer(id: $id) {
+            email
+            companyContactProfiles {
+              company {
+                id
+              }
+            }
+          }
+        }
+      `,
+      { id: customerGid(loggedInCustomerId.replace(/\D/g, "") || loggedInCustomerId) },
+    );
+    email = data.data?.customer?.email ?? email;
+    ownCompanyIds =
+      data.data?.customer?.companyContactProfiles.map(({ company }) => company.id) ?? [];
+  }
+
+  const emailDomain = businessEmailDomain(email);
+  const match = await findMatchingCompany(
+    admin,
+    payload.companyName.trim().replace(/\s+/g, " "),
+    emailDomain,
+  );
+  if (!match || ownCompanyIds.includes(match.company.id)) return null;
+  return {
+    companyName: match.company.name,
+    reason: match.reason,
+    ...(match.reason === "email_domain" && emailDomain ? { emailDomain } : {}),
+  };
+}
+
 export async function registerB2bCustomer(
   admin: AdminApiContext,
   loggedInCustomerId: string | null,
@@ -1889,6 +1964,20 @@ export async function registerB2bCustomer(
 ): Promise<B2bRegistrationResult> {
   let customerId = loggedInCustomerId;
   let customerCreated = false;
+
+  // Never put someone in an existing company without asking: stop before
+  // anything is created and let the form offer "join" or "new".
+  if (!payload.companyChoice) {
+    const match = await companyMatchToConfirm(admin, loggedInCustomerId, payload);
+    if (match) {
+      return {
+        ok: false,
+        code: "COMPANY_MATCH",
+        error: `${match.companyName} is already registered.`,
+        match,
+      };
+    }
+  }
 
   if (!customerId) {
     const created = await createStorefrontCustomer(admin, payload);
@@ -1941,6 +2030,10 @@ export function parseB2bRegistrationPayload(
     phone: str("phone") || undefined,
     phoneCountryCode: str("phoneCountryCode") || undefined,
     phoneExt: normalizePhoneExt(str("phoneExt")) || undefined,
+    companyChoice:
+      str("companyChoice") === "join" || str("companyChoice") === "new"
+        ? (str("companyChoice") as "join" | "new")
+        : undefined,
     address1,
     address2: str("address2") || undefined,
     city,

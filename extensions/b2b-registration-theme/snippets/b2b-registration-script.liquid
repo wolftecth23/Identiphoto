@@ -506,52 +506,132 @@
         banner.scrollIntoView({ behavior: "smooth", block: "center" });
       }
 
-      form.addEventListener("submit", async function (event) {
-        event.preventDefault();
-        banner.hidden = true;
-
-        button.disabled = true;
-        await verifyPhone();
-        button.disabled = false;
-
-        var invalid = fields.filter(function (el) {
-          return !validateField(el);
-        });
-        if (invalid.length) {
-          invalid[0].focus();
-          return;
+      // While a request runs, the submit button shows a spinner and
+      // "Creating account…", and the form can't be sent twice.
+      var buttonLabel = button.textContent.trim();
+      function setBusy(busy) {
+        button.disabled = busy;
+        if (busy) {
+          button.setAttribute("aria-busy", "true");
+          button.replaceChildren();
+          var spinner = document.createElement("span");
+          spinner.className = "b2b-register__spinner";
+          spinner.setAttribute("aria-hidden", "true");
+          button.append(spinner, document.createTextNode(messages.submitting));
+        } else {
+          button.removeAttribute("aria-busy");
+          button.textContent = buttonLabel;
         }
+        matchButtons.forEach(function (choiceButton) {
+          choiceButton.disabled = busy;
+        });
+      }
 
-        var data = new FormData(form);
-        var value = function (name) {
-          return String(data.get(name) || "").trim();
-        };
-        var payload = {
-          firstName: value("firstName"),
-          lastName: value("lastName"),
-          email: value("email"),
-          companyName: value("companyName"),
-          // The server turns this into E.164 using phoneCountryCode.
-          phone: value("phone"),
-          phoneExt: value("phoneExt"),
-          address1: value("address1"),
-          address2: [value("address2"), value("address3")]
-            .filter(Boolean)
-            .join(", "),
-          city: value("city"),
-          provinceCode: value("provinceCode"),
-          countryCode: value("countryCode"),
-          phoneCountryCode: phoneCountry.value,
-          zip: value("zip"),
-          locale: {{ request.locale.iso_code | json }},
-          // Bot checks: the hidden field stays empty and people take a while.
-          website: value("website"),
-          elapsedMs: Date.now() - startedAt,
-        };
+      // An existing company matches the email domain or company name: the
+      // customer decides whether to join it or register a new company.
+      var matchPanel = root.querySelector("[data-b2b-register-match]");
+      var matchText = matchPanel.querySelector("[data-b2b-register-match-text]");
+      var matchButtons = Array.prototype.slice.call(
+        matchPanel.querySelectorAll("[data-choice]")
+      );
+      var companyChoice = "";
+      var matchKey = "";
 
-        button.disabled = true;
-        button.setAttribute("aria-busy", "true");
+      // The answer only applies to the company name and email it was given for.
+      function currentMatchKey() {
+        var email = form.elements.namedItem("email");
+        return (
+          form.elements.namedItem("companyName").value.trim().toLowerCase() +
+          "|" +
+          (email ? email.value.trim().toLowerCase() : "")
+        );
+      }
+
+      function hideMatch() {
+        matchPanel.hidden = true;
+        companyChoice = "";
+        button.hidden = false;
+      }
+
+      function showMatch(match) {
+        var typedName = form.elements.namedItem("companyName").value.trim();
+        var reason =
+          match.reason === "email_domain"
+            ? messages.matchDomain.replace("%domain%", match.emailDomain || "")
+            : messages.matchName;
+        matchText.textContent = reason.replace(/%companyName%/g, match.companyName);
+        matchButtons.forEach(function (choiceButton) {
+          var label =
+            choiceButton.dataset.choice === "join"
+              ? messages.matchJoin.replace("%companyName%", match.companyName)
+              : messages.matchNew.replace("%companyName%", typedName);
+          choiceButton.textContent = label;
+        });
+        matchKey = currentMatchKey();
+        matchPanel.hidden = false;
+        // The two choices replace the submit button until one is picked.
+        button.hidden = true;
+        matchPanel.scrollIntoView({ behavior: "smooth", block: "center" });
+        matchButtons[0].focus();
+      }
+
+      ["companyName", "email"].forEach(function (name) {
+        var el = form.elements.namedItem(name);
+        if (!el) return;
+        el.addEventListener("input", function () {
+          if (!matchPanel.hidden && currentMatchKey() !== matchKey) hideMatch();
+        });
+      });
+
+      matchButtons.forEach(function (choiceButton) {
+        choiceButton.addEventListener("click", function () {
+          companyChoice = choiceButton.dataset.choice;
+          submit();
+        });
+      });
+
+      async function submit() {
+        banner.hidden = true;
+        setBusy(true);
         try {
+          await verifyPhone();
+
+          var invalid = fields.filter(function (el) {
+            return !validateField(el);
+          });
+          if (invalid.length) {
+            invalid[0].focus();
+            return;
+          }
+
+          var data = new FormData(form);
+          var value = function (name) {
+            return String(data.get(name) || "").trim();
+          };
+          var payload = {
+            firstName: value("firstName"),
+            lastName: value("lastName"),
+            email: value("email"),
+            companyName: value("companyName"),
+            // The server turns this into E.164 using phoneCountryCode.
+            phone: value("phone"),
+            phoneExt: value("phoneExt"),
+            address1: value("address1"),
+            address2: [value("address2"), value("address3")]
+              .filter(Boolean)
+              .join(", "),
+            city: value("city"),
+            provinceCode: value("provinceCode"),
+            countryCode: value("countryCode"),
+            phoneCountryCode: phoneCountry.value,
+            zip: value("zip"),
+            locale: {{ request.locale.iso_code | json }},
+            companyChoice: companyChoice,
+            // Bot checks: the hidden field stays empty and people take a while.
+            website: value("website"),
+            elapsedMs: Date.now() - startedAt,
+          };
+
           // Same-origin app proxy request: Shopify signs it and adds
           // logged_in_customer_id when the customer is signed in.
           var response = await fetch(root.dataset.submitUrl, {
@@ -594,6 +674,11 @@
             return;
           }
 
+          if (result && result.code === "COMPANY_MATCH" && result.match) {
+            showMatch(result.match);
+            return;
+          }
+
           // Show a field's error under that field.
           var target =
             result &&
@@ -629,9 +714,15 @@
           console.error(error);
           showBanner("critical", messages.submitError);
         } finally {
-          button.disabled = false;
-          button.removeAttribute("aria-busy");
+          setBusy(false);
         }
+      }
+
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        // A new submit (after editing) asks again if a company matches.
+        hideMatch();
+        submit();
       });
     }
 

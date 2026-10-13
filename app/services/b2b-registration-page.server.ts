@@ -55,6 +55,8 @@ const EN = {
     "Thanks! Your request to join %companyName% has been received and is pending approval.",
   pendingReview:
     "We'll review your application and email you as soon as your business account is approved.",
+  matchConfirm:
+    "%companyName% already has a business account with us. Press OK to join %companyName%, or Cancel to register your company separately.",
   signInAfterRegister:
     "You can sign in with the email you registered. Business ordering opens once your account is approved.",
 };
@@ -112,6 +114,8 @@ const FR: Copy = {
     "Merci ! Votre demande pour rejoindre %companyName% a bien été reçue et est en attente d'approbation.",
   pendingReview:
     "Nous examinerons votre demande et vous écrirons dès que votre compte professionnel sera approuvé.",
+  matchConfirm:
+    "%companyName% a déjà un compte professionnel chez nous. Appuyez sur OK pour rejoindre %companyName%, ou sur Annuler pour inscrire votre entreprise séparément.",
   signInAfterRegister:
     "Vous pouvez vous connecter avec l'adresse courriel utilisée. Les commandes professionnelles seront disponibles une fois votre compte approuvé.",
 };
@@ -270,6 +274,7 @@ function localizedPage(copy: Copy, options: PageOptions): string {
     submitError: copy.submitError,
     success: copy.success,
     successJoinedCompany: copy.successJoinedCompany,
+    matchConfirm: copy.matchConfirm,
     addressLoadError: copy.addressLoadError,
     statePlaceholder: copy.statePlaceholder,
     cityPlaceholder: copy.cityPlaceholder,
@@ -579,6 +584,9 @@ const SCRIPT = `
     }
     loadRegions(root.dataset.province, root.dataset.city).catch(addressLoadFailed);
 
+    // Set when the customer answers whether to join a matching company.
+    var companyChoice = "";
+
     form.addEventListener("submit", async function (event) {
       event.preventDefault();
       banner.hidden = true;
@@ -611,7 +619,9 @@ const SCRIPT = `
         phoneCountryCode: value("phoneCountry"),
         zip: value("zip"),
         locale: {{ request.locale.iso_code | json }},
+        companyChoice: companyChoice,
       };
+      companyChoice = "";
 
       button.disabled = true;
       button.setAttribute("aria-busy", "true");
@@ -636,6 +646,17 @@ const SCRIPT = `
               ? messages.successJoinedCompany.replace("%companyName%", result.companyName)
               : messages.success
           );
+          return;
+        }
+
+        // An existing company matches: ask before joining it.
+        if (result && result.code === "COMPANY_MATCH" && result.match) {
+          companyChoice = window.confirm(
+            messages.matchConfirm.replace(/%companyName%/g, result.match.companyName)
+          )
+            ? "join"
+            : "new";
+          form.requestSubmit();
           return;
         }
 

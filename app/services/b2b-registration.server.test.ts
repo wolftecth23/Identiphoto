@@ -307,6 +307,19 @@ class FakeShop {
         return { customerCreate: { customer: { id: customer.id }, userErrors: [] } };
       }
 
+      case "B2bRegistrationMatchCustomer": {
+        const customer = this.customerById(variables.id);
+        if (!customer) return { customer: null };
+        return {
+          customer: {
+            email: customer.email,
+            companyContactProfiles: this.companiesOf(customer.id).map(
+              (company) => ({ company: { id: company.id } }),
+            ),
+          },
+        };
+      }
+
       case "B2bRegistrationCustomer": {
         const customer = this.customers.find(
           (entry) => entry.id === variables.id,
@@ -390,16 +403,20 @@ class FakeShop {
       }
 
       case "B2bPendingRegistrations": {
-        const tag = (variables.query as string).match(/tag:'(.*)'/)![1];
+        const tags = [...(variables.query as string).matchAll(/tag:'([^']*)'/g)].map(
+          (match) => match[1],
+        );
         return {
           customers: {
             nodes: this.customers
-              .filter((customer) => customer.tags.includes(tag))
+              .filter((customer) => customer.tags.some((tag) => tags.includes(tag)))
               .map((customer) => ({
                 id: customer.id,
                 displayName: `${customer.firstName} ${customer.lastName}`,
                 defaultEmailAddress: { emailAddress: customer.email },
                 createdAt: "2026-10-10T00:00:00Z",
+                updatedAt: "2026-10-10T00:00:00Z",
+                tags: customer.tags,
                 note: customer.note ?? null,
                 companyContactProfiles: this.companiesOf(customer.id).map(
                   (company) => ({
@@ -526,22 +543,37 @@ function payload(companyName: string, email: string): B2bRegistrationPayload {
 }
 
 /**
- * Registers a new (guest) customer and checks which company they ended up in.
+ * Registers a new (guest) customer the way the form does: when an existing
+ * company matches, the first submit only asks, and the customer answers
+ * "join" (or `companyChoice`). Checks which company they ended up in.
  * No email is sent unless `options.emailSender` is given.
  */
 async function register(
   shop: FakeShop,
   companyName: string,
   email: string,
-  options: B2bRegistrationOptions & { locale?: string } = {},
+  options: B2bRegistrationOptions & {
+    locale?: string;
+    companyChoice?: "join" | "new";
+  } = {},
 ) {
-  const { locale, emailSender = null } = options;
-  const result = await registerB2bCustomer(
-    shop.admin(),
-    null,
-    { ...payload(companyName, email), locale },
-    { emailSender },
-  );
+  const { locale, emailSender = null, companyChoice = "join" } = options;
+  const submit = (choice?: "join" | "new") =>
+    registerB2bCustomer(
+      shop.admin(),
+      null,
+      { ...payload(companyName, email), locale, companyChoice: choice },
+      { emailSender },
+    );
+
+  const customersBefore = shop.customers.length;
+  let result = await submit();
+  let match: Extract<typeof result, { ok: false }>["match"];
+  if (!result.ok && result.code === "COMPANY_MATCH") {
+    match = result.match;
+    assert.equal(shop.customers.length, customersBefore, "asked after creating the customer");
+    result = await submit(companyChoice);
+  }
   assert.ok(result.ok, `registration failed: ${JSON.stringify(result)}`);
   const company = shop.companies.find((entry) => entry.id === result.companyId);
   assert.ok(company, "result points at a company that does not exist");
@@ -553,7 +585,7 @@ async function register(
   // The customer's address carries the company's real name, not what was typed.
   assert.equal(customer.addressCompany, company.name);
   assert.equal(result.companyName, company.name);
-  return { result, company };
+  return { result, company, match };
 }
 
 async function expectJoins(
@@ -563,7 +595,9 @@ async function expectJoins(
   existingName: string,
 ) {
   const companiesBefore = shop.companies.length;
-  const { result } = await register(shop, companyName, email);
+  const { result, match } = await register(shop, companyName, email);
+  // The customer was asked first, and told which company matched.
+  assert.equal(match?.companyName, existingName);
   assert.equal(result.companyName, existingName);
   assert.equal(result.created, false);
   assert.equal(shop.companies.length, companiesBefore, "a company was created");
@@ -575,7 +609,8 @@ async function expectNewCompany(
   email: string,
 ) {
   const companiesBefore = shop.companies.length;
-  const { result } = await register(shop, companyName, email);
+  const { result, match } = await register(shop, companyName, email);
+  assert.equal(match, undefined, "asked about an existing company");
   assert.equal(result.companyName, companyName);
   assert.equal(result.created, true);
   assert.equal(shop.companies.length, companiesBefore + 1);
@@ -1051,6 +1086,7 @@ describe("company phone with an extension (client issues #1 and #6)", () => {
     email: string,
     phone: string,
     phoneExt?: string,
+    companyChoice?: "join" | "new",
   ) {
     const prepared = prepareRegistrationPayload({
       ...payload(companyName, email),
@@ -1060,6 +1096,7 @@ describe("company phone with an extension (client issues #1 and #6)", () => {
       zip: "44094",
       phone,
       phoneExt,
+      companyChoice,
     });
     assert.ok(prepared.ok);
     return registerB2bCustomer(shop.admin(), null, prepared.payload, {
@@ -1095,12 +1132,25 @@ describe("company phone with an extension (client issues #1 and #6)", () => {
       "(440) 555-0100",
       "214",
     );
+    const asked = await registerWithPhone(
+      shop,
+      "identiphoto",
+      "bill@identiphoto.test",
+      "(440) 555-0100",
+      "215",
+    );
+    // Not blocked by the shared phone: offered the existing company instead.
+    assert.ok(!asked.ok);
+    assert.equal(asked.code, "COMPANY_MATCH");
+    assert.equal(asked.match?.companyName, "IDentiphoto LLC");
+
     const second = await registerWithPhone(
       shop,
       "identiphoto",
       "bill@identiphoto.test",
       "(440) 555-0100",
       "215",
+      "join",
     );
 
     assert.ok(first.ok && second.ok, JSON.stringify(second));
@@ -1119,5 +1169,68 @@ describe("company phone with an extension (client issues #1 and #6)", () => {
     );
     assert.ok(result.ok);
     assert.equal(shop.customerByEmail("hank@globex.com")!.note, "Phone: +14405550100 ext. 9");
+  });
+});
+
+describe("an existing company matches: the registrant is asked (retest feedback)", () => {
+  test("a fresh company name with an email domain a company already uses -> asks, says why", async () => {
+    const shop = seededShop();
+    const result = await registerB2bCustomer(
+      shop.admin(),
+      null,
+      payload("Fresh Startup Inc", "new.person@shivlab.com"),
+      { emailSender: null },
+    );
+
+    assert.ok(!result.ok);
+    assert.equal(result.code, "COMPANY_MATCH");
+    assert.deepEqual(result.match, {
+      companyName: SHIV,
+      reason: "email_domain",
+      emailDomain: "shivlab.com",
+    });
+    assert.equal(shop.customerByEmail("new.person@shivlab.com"), undefined);
+    assert.equal(shop.companyByName("Fresh Startup Inc"), undefined);
+  });
+
+  test("same name, different suffix -> asks with the company_name reason", async () => {
+    const shop = seededShop();
+    const result = await registerB2bCustomer(
+      shop.admin(),
+      null,
+      payload("Nike Inc.", "buyer@gmail.com"),
+      { emailSender: null },
+    );
+    assert.ok(!result.ok);
+    assert.deepEqual(result.match, { companyName: NIKE, reason: "company_name" });
+  });
+
+  test('answering "new" registers a separate company even though the domain matches', async () => {
+    const shop = seededShop();
+    const before = shop.companies.length;
+    const { result, match, company } = await register(
+      shop,
+      "Fresh Startup Inc",
+      "new.person@shivlab.com",
+      { companyChoice: "new" },
+    );
+    assert.equal(match?.companyName, SHIV);
+    assert.equal(result.created, true);
+    assert.equal(company.name, "Fresh Startup Inc");
+    assert.equal(shop.companies.length, before + 1);
+    assert.equal(result.status, "pending");
+  });
+
+  test("a signed-in contact of the matching company is not asked", async () => {
+    const shop = seededShop();
+    const karan = shop.customerByEmail("karan@shivlab.com")!;
+    const result = await registerB2bCustomer(
+      shop.admin(),
+      karan.id.replace(/\D/g, ""),
+      payload("Shiv Technolabs", "karan@shivlab.com"),
+      { emailSender: null },
+    );
+    assert.ok(result.ok);
+    assert.equal(result.alreadyLinked, true);
   });
 });

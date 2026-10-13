@@ -9,6 +9,14 @@
     "active": "Actif",
     "pending": "En attente d'approbation",
     "submit": "Créer un compte",
+    "submitting": "Création du compte…",
+    "match": {
+      "domain": "Un compte professionnel pour %companyName% utilise déjà des adresses courriel se terminant par @%domain%.",
+      "name": "%companyName% a déjà un compte professionnel chez nous.",
+      "note": "Rejoignez-la si vous y travaillez, ou inscrivez votre entreprise séparément. Dans les deux cas, notre équipe examine la demande avant d'activer les commandes.",
+      "join": "Rejoindre %companyName%",
+      "new": "Inscrire %companyName% comme nouvelle entreprise"
+    },
     "sections": {
       "personal": "Informations personnelles",
       "company": "Informations sur l'entreprise",

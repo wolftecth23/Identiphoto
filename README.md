@@ -97,9 +97,10 @@ Guests can use the theme block; signed-in customers should use the **Profile** e
 
 New registrations are **pending** until staff approve them:
 
-- Registering adds the customer to the company (a new one, or an existing one matched by business email domain or company name) **without a role at any location**, so they can't place B2B orders yet. The customer is tagged `b2b-registration-pending`.
+- If an existing company matches the registrant's business email domain, or a company name that's the same apart from suffixes like "LLC" and "Inc.", the form tells them so. They choose **Join** that company or **Register as a new company**. Nothing is created until they choose.
+- Registering adds the customer to the company **without a role at any location**, so they can't place B2B orders yet. The customer is tagged `b2b-registration-pending`.
 - If the store has company metafields named **B2B account status**, **Approved by** and **Approved on** (Settings → Custom data → Companies), the app fills them in. It finds them by name. If the status field limits its values (for example "Pending approval / Approved / Rejected"), the matching choice is used.
-- Staff review requests in the app's **B2B registrations** page ([`app/routes/app.registrations.tsx`](app/routes/app.registrations.tsx)):
+- Staff review requests on the app's home page, **B2B registrations** ([`app/routes/app._index.tsx`](app/routes/app._index.tsx)):
   - **Approve** assigns the company's ordering role at its location, sets status, Approved by and Approved on, swaps the tag for `b2b-registration-approved`, and emails the customer.
   - **Reject** removes the customer from the company and tags them `b2b-registration-rejected`.
 - The storefront form shows "Pending approval" to anyone still waiting, including signed-in customers.

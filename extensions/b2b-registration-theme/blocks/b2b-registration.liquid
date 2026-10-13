@@ -86,6 +86,11 @@
       <script type="application/json" data-b2b-register-messages>
         {
           "submitError": {{ 'b2b_registration.messages.submit_error' | t | json }},
+          "submitting": {{ 'b2b_registration.submitting' | t | json }},
+          "matchDomain": {{ 'b2b_registration.match.domain' | t | json }},
+          "matchName": {{ 'b2b_registration.match.name' | t | json }},
+          "matchJoin": {{ 'b2b_registration.match.join' | t | json }},
+          "matchNew": {{ 'b2b_registration.match.new' | t | json }},
           "addressLoadError": {{ 'b2b_registration.messages.address_load_error' | t | json }},
           "countryPlaceholder": {{ 'b2b_registration.fields.country_placeholder' | t | json }},
           "statePlaceholder": {{ 'b2b_registration.fields.state_placeholder' | t | json }},
@@ -221,6 +226,15 @@
             </div>
           </div>
         </fieldset>
+
+        <div class="b2b-register__match" role="alert" data-b2b-register-match hidden>
+          <p class="b2b-register__match-text" data-b2b-register-match-text></p>
+          <p class="b2b-register__match-note">{{ 'b2b_registration.match.note' | t }}</p>
+          <div class="b2b-register__match-actions">
+            <button type="button" class="button button--primary" data-choice="join"></button>
+            <button type="button" class="button button--secondary" data-choice="new"></button>
+          </div>
+        </div>
 
         <div class="b2b-register__actions">
           <button type="submit" class="button button--primary b2b-register__submit">
