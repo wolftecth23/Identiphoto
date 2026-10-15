@@ -1,9 +1,9 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import { addressAreaError, shopifyZoneCode } from "./b2b-localization.server";
-import { checkPhone, normalizePhoneExt } from "./b2b-phone.server";
+import { checkPhone, netsuitePhone, normalizePhoneExt } from "./b2b-phone.server";
 import {
   sendRegistrationEmail,
-  smtpMailerFromEnv,
+  mailerFromEnv,
   type Mailer,
 } from "./b2b-registration-email.server";
 
@@ -539,8 +539,8 @@ export function formatPhone(
 }
 
 /**
- * "Phone: +1 212-555-0123 ext. 12" for the company and customer notes, the
- * only place in Shopify an extension can be kept. Empty without an extension.
+ * "Phone: +1 212-555-0123 ext. 12" for the customer note, as customers have
+ * no extension field. Empty without an extension.
  */
 export function phoneExtensionNote(payload: B2bRegistrationPayload): string {
   const ext = normalizePhoneExt(payload.phoneExt);
@@ -811,6 +811,24 @@ export const COMPANY_FIELD_NAMES = {
   status: "B2B account status",
   approvedBy: "Approved by",
   approvedOn: "Approved on",
+  phoneExtension: "Phone extension",
+  netsuitePhone: "NetSuite phone",
+} as const;
+
+/**
+ * Phone fields the app defines itself when missing. They go in the merchant's
+ * "custom" namespace, not the app's, so the NetSuite connector can read them.
+ */
+const COMPANY_PHONE_FIELDS = {
+  phoneExtension: {
+    key: "phone_extension",
+    description: "Extension of the company phone, digits only.",
+  },
+  netsuitePhone: {
+    key: "netsuite_phone",
+    description:
+      "Company phone with its extension in the form NetSuite takes, e.g. 440-555-0100 x214.",
+  },
 } as const;
 
 type CompanyFieldDefinition = {
@@ -818,6 +836,14 @@ type CompanyFieldDefinition = {
   key: string;
   type: string;
   choices: string[];
+};
+
+type MetafieldsSetInput = {
+  ownerId: string;
+  namespace: string;
+  key: string;
+  type: string;
+  value: string;
 };
 
 export type CompanyFieldDefinitions = Partial<
@@ -937,13 +963,7 @@ export async function setCompanyStatusFields(
 ): Promise<void> {
   try {
     const definitions = await companyFieldDefinitions(admin);
-    const metafields: {
-      ownerId: string;
-      namespace: string;
-      key: string;
-      type: string;
-      value: string;
-    }[] = [];
+    const metafields: MetafieldsSetInput[] = [];
     const add = (definition: CompanyFieldDefinition | undefined, value: string) => {
       if (definition && value) {
         metafields.push({
@@ -1000,6 +1020,135 @@ export async function setCompanyStatusFields(
     }
   } catch (error) {
     console.warn("B2B company status fields not saved", error);
+  }
+}
+
+/**
+ * Creates a missing phone field in the "custom" namespace. A definition that
+ * already holds the key under another name is used as is.
+ */
+async function createCompanyPhoneField(
+  admin: AdminApiContext,
+  field: keyof typeof COMPANY_PHONE_FIELDS,
+): Promise<CompanyFieldDefinition | undefined> {
+  const { key, description } = COMPANY_PHONE_FIELDS[field];
+  const definition: CompanyFieldDefinition = {
+    namespace: "custom",
+    key,
+    type: "single_line_text_field",
+    choices: [],
+  };
+
+  type CreateResult = {
+    data?: {
+      metafieldDefinitionCreate?: {
+        userErrors: (UserError & { code?: string | null })[];
+      };
+    };
+  };
+  const result = await graphql<CreateResult>(
+    admin,
+    `
+      #graphql
+      mutation B2bRegistrationCreateCompanyField(
+        $definition: MetafieldDefinitionInput!
+      ) {
+        metafieldDefinitionCreate(definition: $definition) {
+          userErrors {
+            field
+            message
+            code
+          }
+        }
+      }
+    `,
+    {
+      definition: {
+        name: COMPANY_FIELD_NAMES[field],
+        namespace: definition.namespace,
+        key,
+        description,
+        type: definition.type,
+        ownerType: "COMPANY",
+        pin: true,
+      },
+    },
+  );
+  const errors = result.data?.metafieldDefinitionCreate?.userErrors ?? [];
+  if (errors.length && !errors.every((error) => error.code === "TAKEN")) {
+    console.warn(`B2B company field "${COMPANY_FIELD_NAMES[field]}" not created`, errors);
+    return undefined;
+  }
+  return definition;
+}
+
+/**
+ * Writes the new company's "Phone extension" and "NetSuite phone" fields,
+ * creating their definitions the first time. The location phone can't hold
+ * an extension, so these are what the NetSuite connector maps. Best effort,
+ * like the status fields.
+ */
+export async function setCompanyPhoneFields(
+  admin: AdminApiContext,
+  companyId: string,
+  payload: B2bRegistrationPayload,
+): Promise<void> {
+  const phone = payload.phone?.trim();
+  if (!phone) return;
+  const ext = normalizePhoneExt(payload.phoneExt);
+  const values = {
+    phoneExtension: ext,
+    netsuitePhone: netsuitePhone(
+      phone,
+      payload.phoneCountryCode || payload.countryCode,
+      ext,
+    ),
+  };
+
+  try {
+    const definitions = await companyFieldDefinitions(admin);
+    const metafields: MetafieldsSetInput[] = [];
+    for (const field of Object.keys(COMPANY_PHONE_FIELDS) as (keyof typeof COMPANY_PHONE_FIELDS)[]) {
+      if (!values[field]) continue;
+      const definition =
+        definitions[field] ?? (await createCompanyPhoneField(admin, field));
+      if (!definition?.type.endsWith("text_field")) continue;
+      metafields.push({
+        ownerId: companyId,
+        namespace: definition.namespace,
+        key: definition.key,
+        type: definition.type,
+        value: values[field],
+      });
+    }
+    if (!metafields.length) return;
+
+    type SetResult = {
+      data?: { metafieldsSet?: { userErrors: UserError[] } };
+    };
+    const result = await graphql<SetResult>(
+      admin,
+      `
+        #graphql
+        mutation B2bRegistrationSetCompanyFields(
+          $metafields: [MetafieldsSetInput!]!
+        ) {
+          metafieldsSet(metafields: $metafields) {
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+      `,
+      { metafields },
+    );
+    const errors = result.data?.metafieldsSet?.userErrors ?? [];
+    if (errors.length) {
+      console.warn("B2B company phone fields not saved", errors);
+    }
+  } catch (error) {
+    console.warn("B2B company phone fields not saved", error);
   }
 }
 
@@ -1325,7 +1474,7 @@ async function sendRegistrationConfirmation(
   },
 ): Promise<boolean> {
   if (!sender) {
-    console.warn("B2B registration email skipped: SMTP_HOST is not set.");
+    console.warn("B2B registration email skipped: email sending is not set up (MS_* or SMTP_HOST).");
     return false;
   }
   if (!details.to) {
@@ -1451,7 +1600,6 @@ export async function linkCustomerToB2bCompany(
   // customer in that company regardless of the name typed. Personal mailboxes
   // (gmail.com, ...) say nothing about the employer, so they only match by name.
   const emailDomain = businessEmailDomain(customer.email ?? payload.email);
-  const extensionNote = phoneExtensionNote(payload);
 
   type AssignContactResult = {
     data?: {
@@ -1540,10 +1688,7 @@ export async function linkCustomerToB2bCompany(
         `,
         {
           input: {
-            company: {
-              name: companyName,
-              ...(extensionNote ? { note: extensionNote } : {}),
-            },
+            company: { name: companyName },
             companyLocation: {
               name: locationName,
               shippingAddress: buildCompanyLocationAddress(
@@ -1586,6 +1731,7 @@ export async function linkCustomerToB2bCompany(
 
   if (created) {
     await setCompanyStatusFields(admin, companyId, "pending");
+    await setCompanyPhoneFields(admin, companyId, payload);
   }
 
   type CustomerUpdateResult = {
@@ -1673,7 +1819,7 @@ export async function linkCustomerToB2bCompany(
   const emailSent = await sendRegistrationConfirmation(
     admin,
     options.emailSender === undefined
-      ? smtpMailerFromEnv()
+      ? mailerFromEnv()
       : options.emailSender,
     {
       to: customer.email ?? payload.email,

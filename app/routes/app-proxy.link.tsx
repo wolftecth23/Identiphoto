@@ -7,6 +7,10 @@ import {
   protectedCustomerDataHelpMessage,
   registerB2bCustomer,
 } from "../services/b2b-registration.server";
+import {
+  turnstileConfigFromEnv,
+  verifyTurnstile,
+} from "../services/b2b-turnstile.server";
 
 /**
  * Storefront path: /apps/b2b-register/link (see [app_proxy] in shopify.app.toml).
@@ -88,6 +92,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       { ok: false, error: "We could not complete registration. Please try again." },
       422,
     );
+  }
+
+  // CAPTCHA (when its keys are set): the form's Cloudflare Turnstile token.
+  const turnstile = turnstileConfigFromEnv();
+  if (turnstile) {
+    const check = await verifyTurnstile(
+      turnstile,
+      typeof record.turnstileToken === "string" ? record.turnstileToken : "",
+    );
+    if (!check.ok) {
+      console.warn("B2B registration: Turnstile check failed", check.errorCodes);
+      return jsonResponse(
+        {
+          ok: false,
+          code: "CAPTCHA_FAILED",
+          error: "We couldn't verify you're not a robot. Please try again.",
+        },
+        422,
+      );
+    }
   }
 
   const parsed = parseB2bRegistrationPayload(body);

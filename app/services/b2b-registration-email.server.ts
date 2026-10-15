@@ -206,23 +206,164 @@ export function smtpConfigFromEnv(
   };
 }
 
-let smtpMailer: { mailer: Mailer; from: string } | null | undefined;
+export type GraphConfig = {
+  tenantId: string;
+  clientId: string;
+  clientSecret: string;
+  /** Mailbox the email is sent as, e.g. sales@identiphoto.com. */
+  from: string;
+};
 
-/** The SMTP mailer configured in the environment, created once and reused. */
-export function smtpMailerFromEnv(): { mailer: Mailer; from: string } | null {
-  if (smtpMailer !== undefined) return smtpMailer;
+/**
+ * Microsoft 365 settings from the environment, or null when they're not set.
+ * The app registration needs the Graph application permission Mail.Send,
+ * limited to the `from` mailbox.
+ */
+export function graphConfigFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): GraphConfig | null {
+  const tenantId = env.MS_TENANT_ID?.trim();
+  const clientId = env.MS_CLIENT_ID?.trim();
+  const clientSecret = env.MS_CLIENT_SECRET?.trim();
+  if (!tenantId && !clientId && !clientSecret) return null;
+  if (!tenantId || !clientId || !clientSecret) {
+    throw new Error(
+      "Set all of MS_TENANT_ID, MS_CLIENT_ID and MS_CLIENT_SECRET to send email through Microsoft 365.",
+    );
+  }
 
-  const config = smtpConfigFromEnv();
-  smtpMailer = config && {
-    mailer: nodemailer.createTransport({
-      host: config.host,
-      port: config.port,
-      secure: config.secure,
-      auth: config.user ? { user: config.user, pass: config.pass } : undefined,
-    }),
-    from: config.from,
+  const from = env.MAIL_FROM?.trim() || env.SMTP_FROM?.trim();
+  if (!from) {
+    throw new Error("Set MAIL_FROM (e.g. sales@identiphoto.com) to send registration emails.");
+  }
+  return { tenantId, clientId, clientSecret, from };
+}
+
+/** "IDentiphoto <sales@identiphoto.com>" -> "sales@identiphoto.com". */
+function mailboxAddress(from: string): string {
+  return (from.match(/<([^>]+)>/)?.[1] ?? from).trim();
+}
+
+/** Renew the token this long before Microsoft says it expires. */
+const TOKEN_MARGIN_MS = 5 * 60 * 1000;
+
+/**
+ * Sends through Microsoft Graph as the `from` mailbox, signed in as the app
+ * itself (client credentials), so no mailbox password is involved. The
+ * token lasts about an hour and is reused until shortly before then. The
+ * mailbox's own display name is used, and a copy lands in its Sent Items.
+ */
+export function graphMailer(
+  config: GraphConfig,
+  fetchImpl: typeof fetch = fetch,
+  now: () => number = Date.now,
+): Mailer {
+  let token: { value: string; expiresAt: number } | null = null;
+
+  async function accessToken(): Promise<string> {
+    if (token && token.expiresAt - TOKEN_MARGIN_MS > now()) return token.value;
+
+    const response = await fetchImpl(
+      `https://login.microsoftonline.com/${encodeURIComponent(config.tenantId)}/oauth2/v2.0/token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: config.clientId,
+          client_secret: config.clientSecret,
+          scope: "https://graph.microsoft.com/.default",
+          grant_type: "client_credentials",
+        }),
+      },
+    );
+    const body = (await response.json().catch(() => ({}))) as {
+      access_token?: string;
+      expires_in?: number;
+      error?: string;
+      error_description?: string;
+    };
+    if (!response.ok || !body.access_token) {
+      throw new Error(
+        `Microsoft 365 sign-in failed (${response.status}): ${body.error_description ?? body.error ?? "no token returned"}`,
+      );
+    }
+    token = {
+      value: body.access_token,
+      expiresAt: now() + (Number(body.expires_in) || 3600) * 1000,
+    };
+    return token.value;
+  }
+
+  return {
+    async sendMail(message) {
+      const response = await fetchImpl(
+        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailboxAddress(config.from))}/sendMail`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${await accessToken()}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            message: {
+              subject: message.subject,
+              // Graph takes one body; the HTML one carries the button.
+              body: { contentType: "HTML", content: message.html },
+              toRecipients: [{ emailAddress: { address: message.to } }],
+            },
+            saveToSentItems: true,
+          }),
+        },
+      );
+      if (!response.ok) {
+        // A revoked or rotated secret: sign in again on the next email.
+        if (response.status === 401) token = null;
+        const body = (await response.json().catch(() => ({}))) as {
+          error?: { message?: string };
+        };
+        throw new Error(
+          `Microsoft 365 send failed (${response.status}): ${body.error?.message ?? response.statusText}`,
+        );
+      }
+    },
   };
-  return smtpMailer;
+}
+
+let envSender: { mailer: Mailer; from: string } | null | undefined;
+
+/**
+ * The mailer configured in the environment, created once and reused:
+ * Microsoft 365 when MS_* is set, else SMTP, else null (no email is sent).
+ * Incomplete settings are logged and treated as null: by the time an email
+ * is due the customer is registered, so the request mustn't fail over it.
+ */
+export function mailerFromEnv(): { mailer: Mailer; from: string } | null {
+  if (envSender !== undefined) return envSender;
+  try {
+    envSender = senderFromEnv();
+  } catch (error) {
+    console.error("Registration emails are off:", (error as Error).message);
+    envSender = null;
+  }
+  return envSender;
+}
+
+function senderFromEnv(): { mailer: Mailer; from: string } | null {
+  const graph = graphConfigFromEnv();
+  if (graph) return { mailer: graphMailer(graph), from: graph.from };
+
+  const smtp = smtpConfigFromEnv();
+  return (
+    smtp && {
+      mailer: nodemailer.createTransport({
+        host: smtp.host,
+        port: smtp.port,
+        secure: smtp.secure,
+        auth: smtp.user ? { user: smtp.user, pass: smtp.pass } : undefined,
+      }),
+      from: smtp.from,
+    }
+  );
 }
 
 /** Sends the "registration received" email to the customer. */

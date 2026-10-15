@@ -8,7 +8,7 @@ import {
   listRegions,
   shopifyZoneCode,
 } from "./b2b-localization.server";
-import { checkPhone, dialCode, normalizePhoneExt } from "./b2b-phone.server";
+import { checkPhone, dialCode, netsuitePhone, normalizePhoneExt } from "./b2b-phone.server";
 import { lookupPostalCode } from "./b2b-postal.server";
 import {
   formatPhone,
@@ -156,6 +156,7 @@ describe("phone numbers", () => {
       e164: "+998901234567",
       ext: "",
       national: "90 123 45 67",
+      international: "+998 90 123 45 67",
     });
     assert.equal(checkPhone("12345", "UZ").valid, false);
     // A US-length number isn't a valid Uzbek one.
@@ -181,6 +182,13 @@ describe("phone numbers", () => {
     assert.equal(formatPhone("212 555 0123 ext. 12", "US"), "+12125550123");
     // Numbers that don't validate are passed through as typed.
     assert.equal(formatPhone("12345", "US"), "12345");
+  });
+
+  test("formats the NetSuite phone with its extension", () => {
+    assert.equal(netsuitePhone("+14405550100", "US", "214"), "440-555-0100 x214");
+    assert.equal(netsuitePhone("(416) 555-0199", "CA", ""), "416-555-0199");
+    assert.equal(netsuitePhone("020 7946 0958", "GB", "12"), "+44 20 7946 0958 x12");
+    assert.equal(netsuitePhone("12345", "US", "9"), "12345 x9");
   });
 
   test("an extension typed after the number is split off", () => {

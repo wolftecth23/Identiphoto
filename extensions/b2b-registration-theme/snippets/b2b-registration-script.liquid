@@ -499,6 +499,98 @@
 
       phone.addEventListener("blur", verifyPhone);
 
+      // CAPTCHA: Cloudflare Turnstile, when the app has its keys. It runs in
+      // the background and only shows a checkbox when Cloudflare needs a
+      // click. Tokens are single use, so the widget is reset after a submit.
+      var captchaBox = root.querySelector("[data-b2b-register-captcha]");
+      var captchaWidget = null;
+      var captchaToken = "";
+      var captchaWaiters = [];
+
+      function setCaptchaToken(token) {
+        captchaToken = token || "";
+        if (!captchaToken) return;
+        captchaWaiters.splice(0).forEach(function (resolve) {
+          resolve(captchaToken);
+        });
+      }
+
+      function loadTurnstile() {
+        if (window.turnstile) return Promise.resolve(window.turnstile);
+        return new Promise(function (resolve, reject) {
+          var script =
+            document.querySelector("script[data-b2b-turnstile]") ||
+            document.createElement("script");
+          script.addEventListener("load", function () {
+            resolve(window.turnstile);
+          });
+          script.addEventListener("error", reject);
+          if (!script.src) {
+            script.src =
+              "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+            script.async = true;
+            script.dataset.b2bTurnstile = "";
+            document.head.appendChild(script);
+          }
+        });
+      }
+
+      var captchaReady = fetch(root.dataset.captchaUrl, {
+        headers: { Accept: "application/json" },
+      })
+        .then(function (response) {
+          return response.ok ? response.json() : {};
+        })
+        .then(function (config) {
+          if (!config.siteKey) return;
+          return loadTurnstile().then(function (turnstile) {
+            captchaWidget = turnstile.render(captchaBox, {
+              sitekey: config.siteKey,
+              // The server refuses tokens made for any other action.
+              action: "b2b-register",
+              appearance: "interaction-only",
+              language: {{ request.locale.iso_code | json }},
+              callback: setCaptchaToken,
+              "expired-callback": function () {
+                setCaptchaToken("");
+              },
+              "error-callback": function () {
+                setCaptchaToken("");
+              },
+              "before-interactive-callback": function () {
+                captchaBox.dataset.interactive = "";
+              },
+              "after-interactive-callback": function () {
+                delete captchaBox.dataset.interactive;
+              },
+            });
+          });
+        })
+        .catch(function (error) {
+          // Blocked or offline: the server says so if it needs a token.
+          console.error("B2B registration: Turnstile did not load", error);
+        });
+
+      // The widget's token, waiting for it if a check is still running (or
+      // for the person to click). "" without a widget or after 30 seconds;
+      // the server then asks them to try again.
+      async function waitForCaptcha() {
+        await captchaReady;
+        if (captchaWidget === null || captchaToken) return captchaToken;
+        return new Promise(function (resolve) {
+          captchaWaiters.push(resolve);
+          setTimeout(function () {
+            resolve(captchaToken);
+          }, 30000);
+        });
+      }
+
+      function resetCaptcha() {
+        if (captchaWidget === null || !window.turnstile) return;
+        captchaToken = "";
+        window.turnstile.reset(captchaWidget);
+      }
+
       function showBanner(tone, message) {
         banner.dataset.tone = tone;
         banner.textContent = message;
@@ -593,6 +685,7 @@
       async function submit() {
         banner.hidden = true;
         setBusy(true);
+        var captchaUsed = false;
         try {
           await verifyPhone();
 
@@ -630,7 +723,9 @@
             // Bot checks: the hidden field stays empty and people take a while.
             website: value("website"),
             elapsedMs: Date.now() - startedAt,
+            turnstileToken: await waitForCaptcha(),
           };
+          captchaUsed = Boolean(payload.turnstileToken);
 
           // Same-origin app proxy request: Shopify signs it and adds
           // logged_in_customer_id when the customer is signed in.
@@ -679,6 +774,11 @@
             return;
           }
 
+          if (result && result.code === "CAPTCHA_FAILED") {
+            showBanner("critical", messages.captchaError);
+            return;
+          }
+
           // Show a field's error under that field.
           var target =
             result &&
@@ -714,6 +814,9 @@
           console.error(error);
           showBanner("critical", messages.submitError);
         } finally {
+          // The token was spent; the next submit (after a fix, or a
+          // join/new choice) needs a fresh one.
+          if (captchaUsed) resetCaptcha();
           setBusy(false);
         }
       }

@@ -323,6 +323,10 @@
   .b2b-register__actions {
     display: flex;
   }
+  /* Turnstile is 0px tall until it needs a click; cancel the form gap till then. */
+  .b2b-register .b2b-register__captcha:not([data-interactive]) {
+    margin-top: -20px;
+  }
   .b2b-register .b2b-register__submit {
     width: 100%;
     min-height: 48px;

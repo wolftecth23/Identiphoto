@@ -8,7 +8,10 @@ import {
 } from "./b2b-approval.server";
 import {
   buildRegistrationEmail,
+  graphConfigFromEnv,
+  graphMailer,
   smtpConfigFromEnv,
+  type GraphConfig,
   type MailMessage,
 } from "./b2b-registration-email.server";
 import {
@@ -393,6 +396,22 @@ class FakeShop {
 
       case "B2bRegistrationCompanyFieldDefinitions":
         return { metafieldDefinitions: { nodes: this.companyDefinitions } };
+
+      case "B2bRegistrationCreateCompanyField": {
+        const { name, namespace, key, type } = variables.definition;
+        if (this.companyDefinitions.some((d) => d.namespace === namespace && d.key === key)) {
+          return {
+            metafieldDefinitionCreate: {
+              userErrors: [{ field: ["definition", "key"], message: "Key is in use", code: "TAKEN" }],
+            },
+          };
+        }
+        this.companyDefinitions = [
+          ...this.companyDefinitions,
+          { name, namespace, key, type: { name: type }, validations: [] },
+        ];
+        return { metafieldDefinitionCreate: { userErrors: [] } };
+      }
 
       case "B2bRegistrationSetCompanyFields": {
         for (const field of variables.metafields) {
@@ -939,6 +958,145 @@ describe("registration confirmation email", () => {
   });
 });
 
+describe("sending through Microsoft 365 (Graph)", () => {
+  const config: GraphConfig = {
+    tenantId: "tenant-1",
+    clientId: "client-1",
+    clientSecret: "secret-1",
+    from: "IDentiphoto <sales@identiphoto.test>",
+  };
+
+  const message: MailMessage = {
+    from: config.from,
+    to: "hank@globex.com",
+    subject: "We received your business registration with Identiphoto",
+    text: "Hi Hank,",
+    html: "<p>Hi Hank,</p>",
+  };
+
+  /** Fake fetch answering Microsoft's token and sendMail endpoints. */
+  function fakeMicrosoft(
+    options: { tokenStatus?: number; sendStatus?: number; expiresIn?: number } = {},
+  ) {
+    const calls: { url: string; init: RequestInit }[] = [];
+    let tokens = 0;
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      if (url.includes("login.microsoftonline.com")) {
+        const status = options.tokenStatus ?? 200;
+        return new Response(
+          JSON.stringify(
+            status === 200
+              ? { access_token: `token-${++tokens}`, expires_in: options.expiresIn ?? 3599 }
+              : { error: "invalid_client", error_description: "Invalid client secret provided." },
+          ),
+          { status },
+        );
+      }
+      const status = options.sendStatus ?? 202;
+      return status === 202
+        ? new Response(null, { status })
+        : new Response(
+            JSON.stringify({ error: { message: "Access to OData is disabled." } }),
+            { status },
+          );
+    }) as unknown as typeof fetch;
+    return { calls, fetchImpl };
+  }
+
+  test("settings come from the environment", () => {
+    assert.equal(graphConfigFromEnv({}), null);
+    assert.deepEqual(
+      graphConfigFromEnv({
+        MS_TENANT_ID: "t",
+        MS_CLIENT_ID: "c",
+        MS_CLIENT_SECRET: "s",
+        MAIL_FROM: "sales@identiphoto.com",
+      }),
+      { tenantId: "t", clientId: "c", clientSecret: "s", from: "sales@identiphoto.com" },
+    );
+    // A half-filled setup is a mistake, not "send with SMTP instead".
+    assert.throws(() => graphConfigFromEnv({ MS_TENANT_ID: "t", MAIL_FROM: "a@b.com" }));
+    assert.throws(() =>
+      graphConfigFromEnv({ MS_TENANT_ID: "t", MS_CLIENT_ID: "c", MS_CLIENT_SECRET: "s" }),
+    );
+  });
+
+  test("signs in with client credentials and sends as the mailbox", async () => {
+    const { calls, fetchImpl } = fakeMicrosoft();
+    await graphMailer(config, fetchImpl).sendMail(message);
+
+    assert.equal(calls.length, 2);
+    const [signIn, send] = calls;
+    assert.equal(signIn.url, "https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token");
+    const form = new URLSearchParams(String(signIn.init.body));
+    assert.equal(form.get("grant_type"), "client_credentials");
+    assert.equal(form.get("client_id"), "client-1");
+    assert.equal(form.get("client_secret"), "secret-1");
+    assert.equal(form.get("scope"), "https://graph.microsoft.com/.default");
+
+    assert.equal(
+      send.url,
+      "https://graph.microsoft.com/v1.0/users/sales%40identiphoto.test/sendMail",
+    );
+    assert.equal(
+      (send.init.headers as Record<string, string>).Authorization,
+      "Bearer token-1",
+    );
+    assert.deepEqual(JSON.parse(String(send.init.body)), {
+      message: {
+        subject: message.subject,
+        body: { contentType: "HTML", content: "<p>Hi Hank,</p>" },
+        toRecipients: [{ emailAddress: { address: "hank@globex.com" } }],
+      },
+      saveToSentItems: true,
+    });
+  });
+
+  test("the token is reused until shortly before it expires", async () => {
+    const { calls, fetchImpl } = fakeMicrosoft({ expiresIn: 3600 });
+    let clock = 0;
+    const mailer = graphMailer(config, fetchImpl, () => clock);
+
+    await mailer.sendMail(message);
+    clock = 30 * 60 * 1000;
+    await mailer.sendMail(message);
+    assert.equal(calls.filter((call) => call.url.includes("login")).length, 1);
+
+    clock = 56 * 60 * 1000;
+    await mailer.sendMail(message);
+    assert.equal(calls.filter((call) => call.url.includes("login")).length, 2);
+  });
+
+  test("Microsoft's error is reported, without the secret", async () => {
+    const signIn = fakeMicrosoft({ tokenStatus: 401 });
+    await assert.rejects(
+      graphMailer(config, signIn.fetchImpl).sendMail(message),
+      (error: Error) =>
+        /sign-in failed \(401\): Invalid client secret provided\./.test(error.message) &&
+        !error.message.includes("secret-1"),
+    );
+
+    const send = fakeMicrosoft({ sendStatus: 403 });
+    await assert.rejects(
+      graphMailer(config, send.fetchImpl).sendMail(message),
+      /send failed \(403\): Access to OData is disabled\./,
+    );
+  });
+
+  test("a failed Microsoft send still lets the registration succeed", async () => {
+    const shop = seededShop();
+    const { fetchImpl } = fakeMicrosoft({ sendStatus: 403 });
+    const { result } = await register(shop, "Globex", "hank@globex.com", {
+      emailSender: { mailer: graphMailer(config, fetchImpl), from: config.from },
+    });
+
+    assert.ok(result.ok);
+    assert.equal(result.created, true);
+    assert.equal(result.emailSent, false);
+  });
+});
+
 describe("new registrations wait for approval (client issue #3)", () => {
   test("new company -> pending: contact without a role, tagged, status field Pending", async () => {
     const shop = seededShop();
@@ -1104,7 +1262,7 @@ describe("company phone with an extension (client issues #1 and #6)", () => {
     });
   }
 
-  test("main line with an extension registers; the extension goes in the notes", async () => {
+  test("main line with an extension registers; the extension gets its own company field", async () => {
     const shop = seededShop();
     const result = await registerWithPhone(
       shop,
@@ -1120,7 +1278,54 @@ describe("company phone with an extension (client issues #1 and #6)", () => {
     assert.equal(tom.addressPhone, "+14405550100");
     assert.equal(tom.note, "Phone: +14405550100 ext. 214");
     assert.equal(company.locationPhone, "+14405550100");
-    assert.equal(company.note, "Phone: +14405550100 ext. 214");
+    assert.equal(company.note, undefined);
+    assert.equal(company.metafields.get("custom.phone_extension"), "214");
+    assert.equal(company.metafields.get("custom.netsuite_phone"), "440-555-0100 x214");
+    assert.ok(
+      shop.companyDefinitions.some((d) => d.name === "NetSuite phone"),
+      "the missing definitions are created",
+    );
+  });
+
+  test("without an extension only the NetSuite phone is written", async () => {
+    const shop = seededShop();
+    const result = await registerWithPhone(
+      shop,
+      "IDentiphoto LLC",
+      "tom@identiphoto.test",
+      "(440) 555-0100",
+    );
+
+    assert.ok(result.ok, JSON.stringify(result));
+    const company = shop.companyByName("IDentiphoto LLC")!;
+    assert.equal(company.metafields.get("custom.phone_extension"), undefined);
+    assert.equal(company.metafields.get("custom.netsuite_phone"), "440-555-0100");
+  });
+
+  test("a field the merchant already defined under that name is used", async () => {
+    const shop = seededShop();
+    shop.companyDefinitions = [
+      ...shop.companyDefinitions,
+      {
+        name: "Phone extension",
+        namespace: "custom",
+        key: "ext",
+        type: { name: "single_line_text_field" },
+        validations: [],
+      },
+    ];
+    const result = await registerWithPhone(
+      shop,
+      "IDentiphoto LLC",
+      "tom@identiphoto.test",
+      "(440) 555-0100",
+      "214",
+    );
+
+    assert.ok(result.ok, JSON.stringify(result));
+    const company = shop.companyByName("IDentiphoto LLC")!;
+    assert.equal(company.metafields.get("custom.ext"), "214");
+    assert.equal(company.metafields.get("custom.phone_extension"), undefined);
   });
 
   test("a colleague registering with the same company phone joins instead of being blocked", async () => {

@@ -45,6 +45,7 @@
     },
     "messages": {
       "submit_error": "Impossible de terminer l'inscription. Réessayez.",
+      "captcha_error": "Impossible de vérifier que vous n'êtes pas un robot. Réessayez. Si le problème persiste, désactivez les bloqueurs de publicités ou de scripts pour ce site.",
       "success": "Merci ! Votre inscription a bien été reçue et est en attente d'approbation.",
       "success_joined_company": "Merci ! Votre demande pour rejoindre %companyName% a bien été reçue et est en attente d'approbation.",
       "sign_in_after_register": "Vous pouvez vous connecter avec l'adresse courriel utilisée. Les commandes professionnelles seront disponibles une fois votre compte approuvé.",

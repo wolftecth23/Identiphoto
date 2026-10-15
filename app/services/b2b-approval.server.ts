@@ -1,7 +1,7 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import {
   sendApprovalEmail,
-  smtpMailerFromEnv,
+  mailerFromEnv,
   type Mailer,
 } from "./b2b-registration-email.server";
 import {
@@ -410,7 +410,7 @@ export async function approveRegistration(
   }
 
   const sender =
-    options.emailSender === undefined ? smtpMailerFromEnv() : options.emailSender;
+    options.emailSender === undefined ? mailerFromEnv() : options.emailSender;
   const to = customer.defaultEmailAddress?.emailAddress;
   let emailSent = false;
   if (sender && to) {

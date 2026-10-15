@@ -79,6 +79,7 @@
       data-regions-url="/apps/b2b-register/regions"
       data-phone-url="/apps/b2b-register/phone"
       data-postal-url="/apps/b2b-register/postal"
+      data-captcha-url="/apps/b2b-register/captcha"
       data-country="{{ customer.default_address.country_code | default: localization.country.iso_code | escape }}"
       data-province="{{ customer.default_address.province_code | escape }}"
       data-city="{{ customer.default_address.city | escape }}"
@@ -86,6 +87,7 @@
       <script type="application/json" data-b2b-register-messages>
         {
           "submitError": {{ 'b2b_registration.messages.submit_error' | t | json }},
+          "captchaError": {{ 'b2b_registration.messages.captcha_error' | t | json }},
           "submitting": {{ 'b2b_registration.submitting' | t | json }},
           "matchDomain": {{ 'b2b_registration.match.domain' | t | json }},
           "matchName": {{ 'b2b_registration.match.name' | t | json }},
@@ -235,6 +237,9 @@
             <button type="button" class="button button--secondary" data-choice="new"></button>
           </div>
         </div>
+
+        {%- comment -%} Cloudflare Turnstile; only shows when it needs the person to click. {%- endcomment -%}
+        <div class="b2b-register__captcha" data-b2b-register-captcha></div>
 
         <div class="b2b-register__actions">
           <button type="submit" class="button button--primary b2b-register__submit">

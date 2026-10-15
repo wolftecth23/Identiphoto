@@ -132,7 +132,22 @@ Until this is done, the proxy returns `403` with `PROTECTED_CUSTOMER_DATA_REQUIR
 
 ### Registration confirmation email
 
-After a registration the customer gets an email saying it was received and is pending approval. It names the company they applied for or asked to join. A second email goes out when staff approve them. Both are in English, or French when the customer registered on a French storefront. It is sent over SMTP; set these in `.env` (and in your hosting environment):
+After a registration the customer gets an email saying it was received and is pending approval. It names the company they applied for or asked to join. A second email goes out when staff approve them. Both are in English, or French when the customer registered on a French storefront.
+
+The emails go through Microsoft 365 (Microsoft Graph) when the `MS_*` variables are set, otherwise over SMTP. Set these in `.env` (and in your hosting environment).
+
+**Microsoft 365** (no mailbox password; Microsoft is turning off password SMTP):
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `MS_TENANT_ID` | Yes | Directory (tenant) ID of the Microsoft 365 organisation. |
+| `MS_CLIENT_ID` | Yes | Application (client) ID of the app registration. |
+| `MS_CLIENT_SECRET` | Yes | Client secret of the app registration. Expires (24 months at most), so note the renewal date. |
+| `MAIL_FROM` | Yes | Mailbox the emails are sent as, e.g. `sales@identiphoto.com`. Falls back to `SMTP_FROM`. |
+
+The tenant's admin creates the app registration in Microsoft Entra, adds the Microsoft Graph **application** permission `Mail.Send`, grants admin consent, and limits the app to the `MAIL_FROM` mailbox (Exchange RBAC for Applications or an application access policy) so it can't send as anyone else. Each email is also saved in that mailbox's Sent Items.
+
+**SMTP** (used when no `MS_*` variable is set):
 
 | Variable | Required | Notes |
 | --- | --- | --- |
@@ -143,6 +158,17 @@ After a registration the customer gets an email saying it was received and is pe
 | `SMTP_FROM` | If no `SMTP_USER` | Sender, e.g. `Identiphoto <no-reply@identiphoto.com>`. Defaults to `SMTP_USER`. |
 
 A failed send is logged but does not fail the registration; the response then has `emailSent: false`. Customers who were already on the company get no email.
+
+### CAPTCHA (Cloudflare Turnstile)
+
+The registration form uses [Cloudflare Turnstile](https://developers.cloudflare.com/turnstile/) when both keys are set. The widget runs in the background and only shows a checkbox when Cloudflare needs a click. The submit endpoint checks its token with Cloudflare before anything is created in Shopify. The honeypot field and the 3-second timing check apply either way.
+
+| Variable | Notes |
+| --- | --- |
+| `TURNSTILE_SITE_KEY` | Public. The form gets it from `/apps/b2b-register/captcha`, so nothing is set in the theme. |
+| `TURNSTILE_SECRET_KEY` | Private; only sent to Cloudflare. |
+
+Create the widget in Cloudflare (Turnstile → Add widget, mode **Managed**) with the store's domains as hostnames, including the `.myshopify.com` one. Unset or only one key set = Turnstile is off. For local testing, Cloudflare's [test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) always pass (`1x00000000000000000000AA` / `1x0000000000000000000000000000000AA`) or always fail (`2x00000000000000000000AB` / `2x0000000000000000000000000000000AA`). If Cloudflare can't be reached, the registration goes ahead and a warning is logged.
 
 ### Tests
 
