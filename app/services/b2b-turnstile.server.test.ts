@@ -78,6 +78,16 @@ describe("Cloudflare Turnstile (client issue #4)", () => {
     });
   });
 
+  test("Cloudflare's test keys pass, although their action is \"test\"", async () => {
+    const { fetchImpl } = fakeCloudflare({
+      body: { success: true, action: "test", hostname: "example.com" },
+    });
+    assert.deepEqual(
+      await verifyTurnstile(config, "XXXX.DUMMY.TOKEN.XXXX", fetchImpl),
+      { ok: true },
+    );
+  });
+
   test("Cloudflare down -> the registration goes ahead", async () => {
     const offline = fakeCloudflare({ fail: true });
     assert.deepEqual(await verifyTurnstile(config, "token-1", offline.fetchImpl), {

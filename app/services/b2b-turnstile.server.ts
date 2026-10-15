@@ -71,8 +71,14 @@ export async function verifyTurnstile(
   if (!body.success) {
     return { ok: false, errorCodes: body["error-codes"] ?? [] };
   }
-  if (body.action && body.action !== TURNSTILE_ACTION) {
+  // Cloudflare's test keys answer with action "test". Only test secrets
+  // accept their dummy token (real ones refuse it above), so this exception
+  // can't let anything through in production.
+  if (body.action && body.action !== TURNSTILE_ACTION && token !== TURNSTILE_TEST_TOKEN) {
     return { ok: false, errorCodes: ["action-mismatch"] };
   }
   return { ok: true };
 }
+
+/** The token Cloudflare's test site keys hand out. */
+const TURNSTILE_TEST_TOKEN = "XXXX.DUMMY.TOKEN.XXXX";

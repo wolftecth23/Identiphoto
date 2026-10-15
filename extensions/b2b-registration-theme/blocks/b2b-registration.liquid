@@ -239,7 +239,12 @@
         </div>
 
         {%- comment -%} Cloudflare Turnstile; only shows when it needs the person to click. {%- endcomment -%}
-        <div class="b2b-register__captcha" data-b2b-register-captcha></div>
+        <div class="b2b-register__captcha" data-b2b-register-captcha>
+          <div data-b2b-register-captcha-widget></div>
+          <p class="b2b-register__captcha-hint" role="status" data-b2b-register-captcha-hint hidden>
+            {{ 'b2b_registration.messages.captcha_prompt' | t }}
+          </p>
+        </div>
 
         <div class="b2b-register__actions">
           <button type="submit" class="button button--primary b2b-register__submit">

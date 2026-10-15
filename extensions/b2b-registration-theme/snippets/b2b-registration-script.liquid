@@ -16,8 +16,16 @@
       var banner = root.querySelector("[data-b2b-register-banner]");
       var success = root.querySelector("[data-b2b-register-success]");
       var button = form.querySelector('button[type="submit"]');
+      // The `t` filter HTML-escapes ("couldn&#39;t"), but messages are shown
+      // as text, so they're decoded once here. A textarea never runs markup.
+      var decoder = document.createElement("textarea");
       var messages = JSON.parse(
-        root.querySelector("[data-b2b-register-messages]").textContent
+        root.querySelector("[data-b2b-register-messages]").textContent,
+        function (key, value) {
+          if (typeof value !== "string") return value;
+          decoder.innerHTML = value;
+          return decoder.value;
+        }
       );
 
       var country = form.elements.namedItem("countryCode");
@@ -503,16 +511,36 @@
       // the background and only shows a checkbox when Cloudflare needs a
       // click. Tokens are single use, so the widget is reset after a submit.
       var captchaBox = root.querySelector("[data-b2b-register-captcha]");
+      var captchaSlot = captchaBox.querySelector("[data-b2b-register-captcha-widget]");
+      var captchaHint = captchaBox.querySelector("[data-b2b-register-captcha-hint]");
+      var captchaSiteKey = "";
       var captchaWidget = null;
+      var captchaVisible = false;
       var captchaToken = "";
+      var captchaFailed = false;
+      var captchaInteractive = false;
       var captchaWaiters = [];
 
-      function setCaptchaToken(token) {
-        captchaToken = token || "";
-        if (!captchaToken) return;
-        captchaWaiters.splice(0).forEach(function (resolve) {
-          resolve(captchaToken);
+      // Ends any submit waiting for a token: with one, or "" after an error.
+      function finishCaptchaWait() {
+        captchaWaiters.splice(0).forEach(function (done) {
+          done();
         });
+      }
+
+      // The box takes up space while the checkbox or the hint shows.
+      function updateCaptchaBox() {
+        if (captchaInteractive || captchaVisible || !captchaHint.hidden) {
+          captchaBox.dataset.interactive = "";
+        } else {
+          delete captchaBox.dataset.interactive;
+        }
+      }
+
+      function showCaptchaHint(show) {
+        captchaHint.hidden = !show;
+        updateCaptchaBox();
+        if (show) captchaBox.scrollIntoView({ behavior: "smooth", block: "center" });
       }
 
       function loadTurnstile() {
@@ -535,6 +563,45 @@
         });
       }
 
+      // Hidden until Cloudflare needs a click; `visible` shows the box
+      // outright, for when a hidden one didn't come up in time.
+      function renderCaptcha(visible) {
+        if (captchaWidget !== null) window.turnstile.remove(captchaWidget);
+        captchaToken = "";
+        captchaFailed = false;
+        captchaVisible = visible;
+        updateCaptchaBox();
+        captchaWidget = window.turnstile.render(captchaSlot, {
+          sitekey: captchaSiteKey,
+          // The server refuses tokens made for any other action.
+          action: "b2b-register",
+          appearance: visible ? "always" : "interaction-only",
+          language: {{ request.locale.iso_code | json }},
+          callback: function (token) {
+            captchaToken = token || "";
+            if (captchaToken) finishCaptchaWait();
+          },
+          "expired-callback": function () {
+            captchaToken = "";
+          },
+          "error-callback": function (code) {
+            // Codes: developers.cloudflare.com/turnstile/troubleshooting/client-side-errors/
+            console.warn("B2B registration: Turnstile error", code);
+            captchaToken = "";
+            captchaFailed = true;
+            finishCaptchaWait();
+          },
+          "before-interactive-callback": function () {
+            captchaInteractive = true;
+            updateCaptchaBox();
+          },
+          "after-interactive-callback": function () {
+            captchaInteractive = false;
+            updateCaptchaBox();
+          },
+        });
+      }
+
       var captchaReady = fetch(root.dataset.captchaUrl, {
         headers: { Accept: "application/json" },
       })
@@ -543,27 +610,9 @@
         })
         .then(function (config) {
           if (!config.siteKey) return;
-          return loadTurnstile().then(function (turnstile) {
-            captchaWidget = turnstile.render(captchaBox, {
-              sitekey: config.siteKey,
-              // The server refuses tokens made for any other action.
-              action: "b2b-register",
-              appearance: "interaction-only",
-              language: {{ request.locale.iso_code | json }},
-              callback: setCaptchaToken,
-              "expired-callback": function () {
-                setCaptchaToken("");
-              },
-              "error-callback": function () {
-                setCaptchaToken("");
-              },
-              "before-interactive-callback": function () {
-                captchaBox.dataset.interactive = "";
-              },
-              "after-interactive-callback": function () {
-                delete captchaBox.dataset.interactive;
-              },
-            });
+          captchaSiteKey = config.siteKey;
+          return loadTurnstile().then(function () {
+            renderCaptcha(false);
           });
         })
         .catch(function (error) {
@@ -571,17 +620,28 @@
           console.error("B2B registration: Turnstile did not load", error);
         });
 
-      // The widget's token, waiting for it if a check is still running (or
-      // for the person to click). "" without a widget or after 30 seconds;
-      // the server then asks them to try again.
+      // The widget's token. A background check usually has one ready. If
+      // not within a few seconds (or the check failed), the box is shown
+      // with a hint and the submit carries on once it's ticked. "" without a
+      // widget, after an error, or after 2 minutes; the server then asks
+      // them to try again.
       async function waitForCaptcha() {
         await captchaReady;
         if (captchaWidget === null || captchaToken) return captchaToken;
+        if (captchaFailed) renderCaptcha(true);
         return new Promise(function (resolve) {
-          captchaWaiters.push(resolve);
-          setTimeout(function () {
+          var hintTimer = setTimeout(function () {
+            if (!captchaInteractive && !captchaVisible) renderCaptcha(true);
+            showCaptchaHint(true);
+          }, 3000);
+          var giveUpTimer = setTimeout(done, 120000);
+          function done() {
+            clearTimeout(hintTimer);
+            clearTimeout(giveUpTimer);
+            showCaptchaHint(false);
             resolve(captchaToken);
-          }, 30000);
+          }
+          captchaWaiters.push(done);
         });
       }
 

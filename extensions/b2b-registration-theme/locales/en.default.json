@@ -45,7 +45,8 @@
     },
     "messages": {
       "submit_error": "We could not complete registration. Please try again.",
-      "captcha_error": "We couldn't verify you're not a robot. Please try again. If it keeps happening, turn off ad or script blockers for this site.",
+      "captcha_prompt": "Tick \"Verify you are human\" above to finish creating your account.",
+      "captcha_error":"We couldn't verify you're not a robot. Please try again. If it keeps happening, turn off ad or script blockers for this site.",
       "success": "Thanks! Your registration has been received and is pending approval.",
       "success_joined_company": "Thanks! Your request to join %companyName% has been received and is pending approval.",
       "sign_in_after_register": "You can sign in with the email you registered. Business ordering opens once your account is approved.",
