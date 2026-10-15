@@ -749,7 +749,7 @@
             // Lets the theme hide its "Create account" link on later pages
             // (see the hide-registration-link app embed).
             try {
-              window.localStorage.setItem("b2bRegistered", "1");
+              window.localStorage.setItem("b2bRegistered", String(Date.now()));
             } catch (error) {
               // Storage blocked: the link just stays visible.
             }

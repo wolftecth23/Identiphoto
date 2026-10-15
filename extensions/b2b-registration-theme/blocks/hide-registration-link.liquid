@@ -7,29 +7,43 @@
     endif
   endif
 -%}
+{%- comment -%}
+  Links to the registration page, but not sign-in links that come back to it
+  ("…?return_url=/pages/create-account" ends in the same path).
+{%- endcomment -%}
+{%- capture link_selector -%}a[href$="{{ page_path }}"]:not([href*="return_url="]){%- endcapture -%}
 {%- if page_path != blank -%}
   {%- if customer -%}
+    <script>
+      // Signed in: hidden below by Liquid. Dropping the flag makes the link
+      // come back after they sign out, e.g. for a colleague on this computer.
+      try {
+        window.localStorage.removeItem("b2bRegistered");
+      } catch (error) {}
+    </script>
     <style>
-      a[href$="{{ page_path }}"],
-      li:has(> a[href$="{{ page_path }}"]) {
+      {{ link_selector }},
+      li:has(> {{ link_selector }}) {
         display: none !important;
       }
     </style>
   {%- else -%}
     {%- comment -%}
-      Guests who registered in this browser (the registration form sets
-      "b2bRegistered") don't see the link either; they're asked to sign in.
+      Guests who registered in this browser in the last 30 days (the form
+      stores the time in "b2bRegistered") don't see the link either; they're
+      asked to sign in. Signing in clears it, see above.
     {%- endcomment -%}
     <script>
       try {
-        if (window.localStorage.getItem("b2bRegistered")) {
+        var registeredAt = Number(window.localStorage.getItem("b2bRegistered"));
+        if (registeredAt && Date.now() - registeredAt < 30 * 24 * 60 * 60 * 1000) {
           document.documentElement.classList.add("b2b-registered");
         }
       } catch (error) {}
     </script>
     <style>
-      html.b2b-registered a[href$="{{ page_path }}"],
-      html.b2b-registered li:has(> a[href$="{{ page_path }}"]) {
+      html.b2b-registered {{ link_selector }},
+      html.b2b-registered li:has(> {{ link_selector }}) {
         display: none !important;
       }
     </style>
