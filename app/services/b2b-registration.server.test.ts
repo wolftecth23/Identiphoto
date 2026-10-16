@@ -50,6 +50,7 @@ type FakeCompany = {
   createdAt: string;
   note?: string;
   locationPhone?: string;
+  billingSameAsShipping?: boolean;
   contactCustomerIds: string[];
   /** Customer ID -> CompanyContact ID. */
   contactIds: Map<string, string>;
@@ -350,6 +351,7 @@ class FakeShop {
         );
         company.note = variables.input.company.note;
         company.locationPhone = variables.input.companyLocation.phone;
+        company.billingSameAsShipping = variables.input.companyLocation.billingSameAsShipping;
         return {
           companyCreate: {
             company: { id: company.id, name: company.name },
@@ -1278,6 +1280,7 @@ describe("company phone with an extension (client issues #1 and #6)", () => {
     assert.equal(tom.addressPhone, "+14405550100");
     assert.equal(tom.note, "Phone: +14405550100 ext. 214");
     assert.equal(company.locationPhone, "+14405550100");
+    assert.equal(company.billingSameAsShipping, true, "orders get a billing address");
     assert.equal(company.note, undefined);
     assert.equal(company.metafields.get("custom.phone_extension"), "214");
     assert.equal(company.metafields.get("custom.netsuite_phone"), "440-555-0100 x214");

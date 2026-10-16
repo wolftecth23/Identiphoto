@@ -1696,6 +1696,9 @@ export async function linkCustomerToB2bCompany(
                 customer.firstName,
                 customer.lastName,
               ),
+              // Without a billing address, B2B orders (and their confirmation
+              // emails) have none either (testing feedback #7).
+              billingSameAsShipping: true,
               phone: formatPhone(payload.phone, payload.phoneCountryCode || payload.countryCode),
             },
           },
